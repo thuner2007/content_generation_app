@@ -8,6 +8,9 @@ from ui.chat_view import ChatView
 from ui.project_view import RightPanel
 from ui.asset_view import AssetView
 from ui.settings_view import SettingsView
+from ui.brief_view import BriefView
+from ui.brand_view import BrandView
+from storage.project_repo import get_project
 
 
 class AppLayout:
@@ -78,6 +81,32 @@ class AppLayout:
         settings_view = SettingsView(page=self.page, app=self)
         self._main_area.content = settings_view.build()
         self._main_area.update()
+
+    def show_brand_view(self) -> None:
+        self.state.current_view = "brand"
+        if self.state.current_project:
+            from storage.project_repo import get_project as _gp
+            fresh = _gp(self.state.current_project.id)
+            if fresh:
+                self.state.current_project = fresh
+        brand_view = BrandView(page=self.page, app=self)
+        self._main_area.content = brand_view.build()
+        self._main_area.update()
+
+    def show_brief_view(self) -> None:
+        self.state.current_view = "brief"
+        # Always reload from DB so the page reflects the latest saved data
+        if self.state.current_project:
+            fresh = get_project(self.state.current_project.id)
+            if fresh:
+                self.state.current_project = fresh
+        brief_view = BriefView(page=self.page, app=self)
+        self._main_area.content = brief_view.build()
+        self._main_area.update()
+
+    def refresh_brief_if_active(self) -> None:
+        if self.state.current_view == "brief":
+            self.show_brief_view()
 
     # ── Refresh hooks ──────────────────────────────────────────────────────────
 

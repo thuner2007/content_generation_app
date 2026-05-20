@@ -23,6 +23,7 @@ class GeminiProvider(AIProvider):
         messages: list[dict],
         model: Optional[str] = None,
         max_tokens: int = 2048,
+        images: Optional[list[dict]] = None,
     ) -> GenerationResult:
         model = model or _DEFAULT_MODEL
         api_key = get_api_key(self.provider_name)
@@ -66,7 +67,18 @@ class GeminiProvider(AIProvider):
                 last_user_msg = system_instruction + "\n\n" + last_user_msg
 
             chat = genai_model.start_chat(history=history[:-1] if len(history) > 1 else [])
-            response = chat.send_message(history[-1]["parts"][0] if history else last_user_msg)
+            last_text = history[-1]["parts"][0] if history else last_user_msg
+            if images:
+                import base64 as _b64
+                parts = [last_text]
+                for img in images:
+                    parts.append({"inline_data": {
+                        "mime_type": img["mime_type"],
+                        "data": _b64.b64decode(img["base64"]),
+                    }})
+                response = chat.send_message(parts)
+            else:
+                response = chat.send_message(last_text)
 
             content = response.text or ""
             tokens_in = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
@@ -87,6 +99,9 @@ class GeminiProvider(AIProvider):
                 provider=self.provider_name,
                 error=str(exc),
             )
+
+    def supports_vision(self, model: Optional[str] = None) -> bool:
+        return True  # all supported Gemini models are multimodal
 
     def list_models(self) -> list[str]:
         return list(_PRICING.keys())

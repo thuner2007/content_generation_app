@@ -145,7 +145,7 @@ def _ollama_request(path: str, payload: Optional[dict] = None, timeout: int = 12
 def is_ollama_running() -> bool:
     """Return True if the Ollama daemon is reachable."""
     try:
-        _ollama_request("/api/tags", timeout=3)
+        _ollama_request("/api/tags", timeout=1)
         return True
     except Exception:
         return False
@@ -192,6 +192,28 @@ def pull_model(model_name: str, on_progress=None) -> bool:
         return False
 
 
+_VISION_KEYWORDS = ("llava", "bakllava", "moondream", "minicpm-v", "cogvlm", "llava-phi", "vision")
+
+
+def model_supports_vision(model_name: str) -> bool:
+    """Return True if the model can process image inputs."""
+    lower = model_name.lower()
+    if any(kw in lower for kw in _VISION_KEYWORDS):
+        return True
+    # Ask Ollama for model capabilities (available in Ollama 0.3+)
+    try:
+        data = _ollama_request("/api/show", {"name": model_name}, timeout=5)
+        if "vision" in data.get("capabilities", []):
+            return True
+        # Older Ollama: a vision model has a projector / clip family
+        families = (data.get("details") or {}).get("families") or []
+        if any("clip" in f.lower() or "vision" in f.lower() for f in families):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def delete_model(model_name: str) -> bool:
     """Delete a locally installed model."""
     url = f"{OLLAMA_BASE}/api/delete"
@@ -217,6 +239,13 @@ class OllamaProvider(AIProvider):
         """Configured when Ollama is running AND at least one model is installed."""
         return is_ollama_running() and bool(list_installed_models())
 
+    def supports_vision(self, model: Optional[str] = None) -> bool:
+        m = model or ""
+        if not m:
+            installed = self.list_models()
+            m = installed[0] if installed else ""
+        return model_supports_vision(m) if m else False
+
     def list_models(self) -> list[str]:
         return [m["name"] for m in list_installed_models()]
 
@@ -225,6 +254,7 @@ class OllamaProvider(AIProvider):
         messages: list[dict],
         model: Optional[str] = None,
         max_tokens: int = 2048,
+        images: Optional[list[dict]] = None,
     ) -> GenerationResult:
         if not is_ollama_running():
             return GenerationResult(
@@ -245,10 +275,37 @@ class OllamaProvider(AIProvider):
                 error="No local models installed. Go to Settings → Local Models to download one.",
             )
         model = model or available[0]
+
+        # Refuse early when images are attached but the model can't see them
+        if images and not model_supports_vision(model):
+            return GenerationResult(
+                content="",
+                model=model,
+                provider=self.provider_name,
+                error=(
+                    f"'{model}' is a text-only model and cannot analyze images.\n\n"
+                    "Switch to a vision-capable model, for example:\n"
+                    "  ollama pull llava\n"
+                    "  ollama pull llava-phi3\n"
+                    "  ollama pull moondream\n\n"
+                    "You can download them in Settings → Local Models."
+                ),
+            )
+
         try:
+            chat_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+
+            # Attach images to last user message (llava / llava-phi3 / moondream etc.)
+            if images:
+                img_b64_list = [img["base64"] for img in images]
+                for msg in reversed(chat_messages):
+                    if msg["role"] == "user":
+                        msg["images"] = img_b64_list
+                        break
+
             payload = {
                 "model": model,
-                "messages": messages,
+                "messages": chat_messages,
                 "stream": False,
                 "options": {"num_predict": max_tokens},
             }

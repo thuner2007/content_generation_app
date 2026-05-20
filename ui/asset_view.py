@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 _ASSET_TYPES = [
     ("all",           "All",            ft.Icons.GRID_VIEW_OUTLINED),
     ("text",          "Ad Copy",        ft.Icons.TEXT_FIELDS),
+    ("image",         "Generated Images", ft.Icons.AUTO_AWESOME),
     ("image_prompt",  "Image Prompts",  ft.Icons.IMAGE_OUTLINED),
     ("video_prompt",  "Video Prompts",  ft.Icons.MOVIE_OUTLINED),
     ("bulk",          "Bulk Sets",      ft.Icons.FORMAT_LIST_BULLETED),
@@ -140,6 +141,98 @@ class AssetView:
         )
 
     def _asset_card(self, asset: Asset) -> ft.Container:
+        if asset.type == "image":
+            return self._image_asset_card(asset)
+        return self._text_asset_card(asset)
+
+    def _image_asset_card(self, asset: Asset) -> ft.Container:
+        path = asset.content  # content stores the file path for image assets
+        actions = ft.Row(
+            controls=[
+                T.icon_button(
+                    ft.Icons.FOLDER_OPEN_OUTLINED,
+                    "Open folder",
+                    on_click=lambda e, p=path: self._open_folder(p),
+                    size=15,
+                ),
+                T.icon_button(
+                    ft.Icons.DELETE_OUTLINE,
+                    "Delete",
+                    on_click=lambda e, a=asset: self._delete_asset(a),
+                    size=15,
+                    color=T.ERROR,
+                ),
+            ],
+            spacing=0,
+        )
+        return ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Image(
+                            src=path,
+                            width=100,
+                            height=100,
+                            fit=ft.ImageFit.COVER,
+                            border_radius=8,
+                            error_content=ft.Container(
+                                content=ft.Icon(ft.Icons.BROKEN_IMAGE_OUTLINED, size=24, color=T.TEXT_MUTED),
+                                width=100, height=100, alignment=ft.alignment.center,
+                            ),
+                        ),
+                        width=100,
+                        height=100,
+                        border_radius=8,
+                        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                        border=ft.border.all(1, T.BORDER),
+                    ),
+                    ft.Column(
+                        controls=[
+                            ft.Row(
+                                controls=[
+                                    ft.Container(
+                                        content=ft.Icon(ft.Icons.AUTO_AWESOME, size=12, color=T.ACCENT_LIGHT),
+                                        width=22, height=22, bgcolor=T.ACCENT_DIM,
+                                        border_radius=5, alignment=ft.alignment.center,
+                                    ),
+                                    ft.Text(
+                                        asset.title or "Generated Image",
+                                        size=13, color=T.TEXT_PRIMARY,
+                                        weight=ft.FontWeight.W_500,
+                                        expand=True, overflow=ft.TextOverflow.ELLIPSIS,
+                                    ),
+                                    actions,
+                                ],
+                                spacing=6, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                            ft.Text(
+                                path, size=10, color=T.TEXT_MUTED,
+                                overflow=ft.TextOverflow.ELLIPSIS, selectable=True,
+                            ),
+                            ft.Row(
+                                controls=[
+                                    T.provider_badge("local"),
+                                    ft.Text(
+                                        asset.created_at[:10] if asset.created_at else "",
+                                        size=10, color=T.TEXT_MUTED,
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+                        ],
+                        spacing=4, expand=True, tight=True,
+                    ),
+                ],
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
+            padding=ft.padding.symmetric(horizontal=14, vertical=12),
+            bgcolor=T.BG_CARD,
+            border_radius=10,
+            border=ft.border.all(1, T.BORDER),
+        )
+
+    def _text_asset_card(self, asset: Asset) -> ft.Container:
         type_icons = {
             "text": ft.Icons.TEXT_FIELDS,
             "image_prompt": ft.Icons.IMAGE_OUTLINED,
@@ -156,19 +249,14 @@ class AssetView:
                         controls=[
                             ft.Container(
                                 content=ft.Icon(icon, size=14, color=T.ACCENT_LIGHT),
-                                width=28,
-                                height=28,
-                                bgcolor=T.ACCENT_DIM,
-                                border_radius=6,
-                                alignment=ft.alignment.center,
+                                width=28, height=28, bgcolor=T.ACCENT_DIM,
+                                border_radius=6, alignment=ft.alignment.center,
                             ),
                             ft.Text(
                                 asset.title or asset.type.replace("_", " ").title(),
-                                size=13,
-                                color=T.TEXT_PRIMARY,
+                                size=13, color=T.TEXT_PRIMARY,
                                 weight=ft.FontWeight.W_500,
-                                expand=True,
-                                overflow=ft.TextOverflow.ELLIPSIS,
+                                expand=True, overflow=ft.TextOverflow.ELLIPSIS,
                             ),
                             ft.Row(
                                 controls=[
@@ -217,6 +305,21 @@ class AssetView:
                 self._asset_grid.update()
             except Exception:
                 pass
+
+    def _open_folder(self, file_path: str) -> None:
+        import subprocess
+        import sys
+        from pathlib import Path
+        folder = str(Path(file_path).parent)
+        try:
+            if sys.platform == "win32":
+                subprocess.Popen(["explorer", folder])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except Exception:
+            pass
 
     def _copy(self, content: str) -> None:
         self.page.set_clipboard(content)

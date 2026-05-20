@@ -1,7 +1,7 @@
 """Dispatcher — orchestrates AI calls via the provider router."""
 from typing import Optional
 
-from ai_providers.base import GenerationResult
+from ai_providers.base import GenerationResult  # noqa: F401 (re-exported)
 from ai_providers.router import get_provider
 from core.app_state import AppState
 from core import cost_tracker
@@ -14,6 +14,7 @@ def generate(
     state: AppState,
     user_input: str,
     file_context: str = "",
+    images: Optional[list[dict]] = None,
 ) -> GenerationResult:
     """
     Full generation pipeline:
@@ -45,7 +46,7 @@ def generate(
     )
 
     # Call AI
-    result = provider.generate(messages=messages, model=state.selected_model)
+    result = provider.generate(messages=messages, model=state.selected_model, images=images or [])
 
     # Persist user message
     add_message(

@@ -23,6 +23,7 @@ class ClaudeProvider(AIProvider):
         messages: list[dict],
         model: Optional[str] = None,
         max_tokens: int = 2048,
+        images: Optional[list[dict]] = None,
     ) -> GenerationResult:
         model = model or _DEFAULT_MODEL
         api_key = get_api_key(self.provider_name)
@@ -44,7 +45,24 @@ class ClaudeProvider(AIProvider):
                 if m["role"] == "system":
                     system_content = m["content"]
                 else:
-                    chat_messages.append(m)
+                    chat_messages.append({"role": m["role"], "content": m["content"]})
+
+            # Attach images to last user message (vision)
+            if images:
+                for i in range(len(chat_messages) - 1, -1, -1):
+                    if chat_messages[i]["role"] == "user":
+                        content = [{"type": "text", "text": chat_messages[i]["content"]}]
+                        for img in images:
+                            content.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": img["mime_type"],
+                                    "data": img["base64"],
+                                },
+                            })
+                        chat_messages[i]["content"] = content
+                        break
 
             kwargs = dict(
                 model=model,
@@ -74,6 +92,9 @@ class ClaudeProvider(AIProvider):
                 provider=self.provider_name,
                 error=str(exc),
             )
+
+    def supports_vision(self, model: Optional[str] = None) -> bool:
+        return True  # all Claude 3 models support vision
 
     def list_models(self) -> list[str]:
         return list(_PRICING.keys())

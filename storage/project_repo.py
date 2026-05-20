@@ -11,8 +11,8 @@ def create_project(name: str, **kwargs) -> Project:
     conn = get_connection()
     try:
         conn.execute(
-            """INSERT INTO projects (id, name, slogan, brand_colors, fonts, logo_path, legal_info, description)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            """INSERT INTO projects (id, name, slogan, brand_colors, fonts, logo_path, legal_info, description, marketing_brief)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 project_id,
                 name,
@@ -22,6 +22,7 @@ def create_project(name: str, **kwargs) -> Project:
                 kwargs.get("logo_path", ""),
                 kwargs.get("legal_info", ""),
                 kwargs.get("description", ""),
+                kwargs.get("marketing_brief", ""),
             ),
         )
         conn.commit()
@@ -53,7 +54,7 @@ def update_project(project: Project) -> None:
     try:
         conn.execute(
             """UPDATE projects SET name=?, slogan=?, brand_colors=?, fonts=?,
-               logo_path=?, legal_info=?, description=?,
+               logo_path=?, legal_info=?, description=?, marketing_brief=?,
                updated_at=CURRENT_TIMESTAMP WHERE id=?""",
             (
                 project.name,
@@ -63,6 +64,7 @@ def update_project(project: Project) -> None:
                 project.logo_path,
                 project.legal_info,
                 project.description,
+                project.marketing_brief,
                 project.id,
             ),
         )
@@ -90,6 +92,7 @@ def _row_to_project(row) -> Project:
         logo_path=row["logo_path"] or "",
         legal_info=row["legal_info"] or "",
         description=row["description"] or "",
+        marketing_brief=row["marketing_brief"] or "",
         created_at=row["created_at"] or "",
         updated_at=row["updated_at"] or "",
     )

@@ -30,8 +30,11 @@ class AIProvider(ABC):
         messages: list[dict],
         model: Optional[str] = None,
         max_tokens: int = 2048,
+        images: Optional[list[dict]] = None,
     ) -> GenerationResult:
-        """Generate a response. messages = [{'role': ..., 'content': ...}]"""
+        """Generate a response. messages = [{'role': ..., 'content': ...}]
+        images = [{'filename': str, 'mime_type': str, 'base64': str}, ...]
+        """
 
     @abstractmethod
     def list_models(self) -> list[str]:
@@ -44,6 +47,10 @@ class AIProvider(ABC):
     def default_model(self) -> str:
         models = self.list_models()
         return models[0] if models else ""
+
+    def supports_vision(self, model: Optional[str] = None) -> bool:
+        """Return True if this provider+model can process image inputs."""
+        return False
 
     def is_configured(self) -> bool:
         from storage.asset_repo import get_api_key

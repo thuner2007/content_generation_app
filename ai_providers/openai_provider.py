@@ -25,6 +25,7 @@ class OpenAIProvider(AIProvider):
         messages: list[dict],
         model: Optional[str] = None,
         max_tokens: int = 2048,
+        images: Optional[list[dict]] = None,
     ) -> GenerationResult:
         model = model or _DEFAULT_MODEL
         api_key = get_api_key(self.provider_name)
@@ -38,9 +39,23 @@ class OpenAIProvider(AIProvider):
         try:
             from openai import OpenAI  # lazy import so app loads without the package
             client = OpenAI(api_key=api_key)
+
+            send_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
+
+            # Attach images to last user message (vision)
+            if images:
+                for i in range(len(send_messages) - 1, -1, -1):
+                    if send_messages[i]["role"] == "user":
+                        content = [{"type": "text", "text": send_messages[i]["content"]}]
+                        for img in images:
+                            url = f"data:{img['mime_type']};base64,{img['base64']}"
+                            content.append({"type": "image_url", "image_url": {"url": url}})
+                        send_messages[i]["content"] = content
+                        break
+
             response = client.chat.completions.create(
                 model=model,
-                messages=messages,
+                messages=send_messages,
                 max_tokens=max_tokens,
             )
             choice = response.choices[0]
@@ -63,6 +78,12 @@ class OpenAIProvider(AIProvider):
                 provider=self.provider_name,
                 error=str(exc),
             )
+
+    # o1/o1-mini are text-only; reasoning models don't accept image input
+    _VISION_MODELS = {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo"}
+
+    def supports_vision(self, model: Optional[str] = None) -> bool:
+        return (model or _DEFAULT_MODEL) in self._VISION_MODELS
 
     def list_models(self) -> list[str]:
         return list(_PRICING.keys())

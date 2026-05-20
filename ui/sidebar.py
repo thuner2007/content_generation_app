@@ -102,6 +102,8 @@ class Sidebar:
 
     def _bottom_nav(self) -> ft.Column:
         items = [
+            (ft.Icons.PALETTE_OUTLINED, "Brand", "brand"),
+            (ft.Icons.CAMPAIGN_OUTLINED, "Brief", "brief"),
             (ft.Icons.PHOTO_LIBRARY_OUTLINED, "Assets", "assets"),
             (ft.Icons.SETTINGS_OUTLINED, "Settings", "settings"),
         ]
@@ -220,6 +222,10 @@ class Sidebar:
             self.app.show_assets_view()
         elif view == "settings":
             self.app.show_settings_view()
+        elif view == "brief":
+            self.app.show_brief_view()
+        elif view == "brand":
+            self.app.show_brand_view()
         elif view == "chat":
             self.app.show_chat_view()
 

@@ -33,6 +33,42 @@ class AppState:
 
     def load_initial_data(self) -> None:
         self.projects = get_all_projects()
+        self._resolve_default_provider()
+
+    def _resolve_default_provider(self) -> None:
+        """Pick the startup provider/model with this priority:
+        1. User's saved preference (default_provider / default_model)
+        2. First cloud provider that has an API key configured
+        3. Ollama, if it is running and has at least one model installed
+        4. Hard-coded fallback (openai / gpt-4o-mini)
+        """
+        from storage.settings_repo import get_setting
+        from ai_providers.router import get_configured_providers, get_models_for_provider
+
+        saved_provider = get_setting("default_provider")
+        saved_model = get_setting("default_model")
+        if saved_provider and saved_model:
+            self.selected_provider = saved_provider
+            self.selected_model = saved_model
+            return
+
+        configured = get_configured_providers()
+        if configured:
+            self.selected_provider = configured[0]
+            models = get_models_for_provider(configured[0])
+            self.selected_model = models[0] if models else ""
+            return
+
+        try:
+            from ai_providers.ollama_provider import is_ollama_running, list_installed_models
+            if is_ollama_running():
+                installed = list_installed_models()
+                if installed:
+                    self.selected_provider = "ollama"
+                    self.selected_model = installed[0]["name"]
+                    return
+        except Exception:
+            pass
 
     # ── Subscriptions ──────────────────────────────────────────────────────────
 

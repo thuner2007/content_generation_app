@@ -101,7 +101,23 @@ def init_db() -> None:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
         """)
         conn.commit()
+
+        # Migrations — safe to run on every startup
+        _migrate(conn)
     finally:
         conn.close()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("ALTER TABLE projects ADD COLUMN marketing_brief TEXT DEFAULT ''")
+        conn.commit()
+    except Exception:
+        pass  # column already exists

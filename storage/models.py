@@ -13,6 +13,7 @@ class Project:
     logo_path: str = ""
     legal_info: str = ""
     description: str = ""
+    marketing_brief: str = ""
     created_at: str = ""
     updated_at: str = ""
 
