@@ -55,6 +55,9 @@ def update_project(project: Project) -> None:
         conn.execute(
             """UPDATE projects SET name=?, slogan=?, brand_colors=?, fonts=?,
                logo_path=?, legal_info=?, description=?, marketing_brief=?,
+               image_style=?, tone_of_voice=?, brand_values=?,
+               voiceover_voice=?, music_mood=?, video_style=?,
+               target_audience=?, content_pillars=?, hashtags=?,
                updated_at=CURRENT_TIMESTAMP WHERE id=?""",
             (
                 project.name,
@@ -65,6 +68,15 @@ def update_project(project: Project) -> None:
                 project.legal_info,
                 project.description,
                 project.marketing_brief,
+                project.image_style,
+                project.tone_of_voice,
+                project.brand_values,
+                project.voiceover_voice,
+                project.music_mood,
+                project.video_style,
+                project.target_audience,
+                project.content_pillars,
+                project.hashtags,
                 project.id,
             ),
         )
@@ -83,16 +95,27 @@ def delete_project(project_id: str) -> None:
 
 
 def _row_to_project(row) -> Project:
+    keys = row.keys()
+    def _get(col): return row[col] if col in keys else ""
     return Project(
         id=row["id"],
         name=row["name"],
-        slogan=row["slogan"] or "",
-        brand_colors=row["brand_colors"] or "",
-        fonts=row["fonts"] or "",
-        logo_path=row["logo_path"] or "",
-        legal_info=row["legal_info"] or "",
-        description=row["description"] or "",
-        marketing_brief=row["marketing_brief"] or "",
+        slogan=_get("slogan"),
+        brand_colors=_get("brand_colors"),
+        fonts=_get("fonts"),
+        logo_path=_get("logo_path"),
+        legal_info=_get("legal_info"),
+        description=_get("description"),
+        marketing_brief=_get("marketing_brief"),
+        image_style=_get("image_style"),
+        tone_of_voice=_get("tone_of_voice"),
+        brand_values=_get("brand_values"),
+        voiceover_voice=_get("voiceover_voice"),
+        music_mood=_get("music_mood"),
+        video_style=_get("video_style"),
+        target_audience=_get("target_audience"),
+        content_pillars=_get("content_pillars"),
+        hashtags=_get("hashtags"),
         created_at=row["created_at"] or "",
         updated_at=row["updated_at"] or "",
     )

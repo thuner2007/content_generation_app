@@ -4,17 +4,25 @@ from typing import Optional
 from ai_providers.base import AIProvider, GenerationResult
 from storage.asset_repo import get_api_key
 
-# Pricing per 1M tokens (input, output) as of mid-2025
+# Pricing per 1M tokens (input, output) as of May 2026
 _PRICING: dict[str, tuple[float, float]] = {
+    # GPT-4.1 series (April 2025) — best coding + instruction following, 1M context
+    "gpt-4.1":             (2.00,   8.00),
+    "gpt-4.1-mini":        (0.40,   1.60),
+    "gpt-4.1-nano":        (0.10,   0.40),
+    # Reasoning models (o-series)
+    "o3":                  (10.00, 40.00),
+    "o4-mini":             (1.10,   4.40),
+    "o3-pro":              (20.00, 80.00),
+    # GPT-4o series (still supported)
     "gpt-4o":              (2.50,  10.00),
     "gpt-4o-mini":         (0.15,   0.60),
-    "gpt-4-turbo":         (10.00, 30.00),
-    "gpt-3.5-turbo":       (0.50,   1.50),
+    # Legacy
     "o1":                  (15.00, 60.00),
     "o1-mini":             (3.00,  12.00),
 }
 
-_DEFAULT_MODEL = "gpt-4o-mini"
+_DEFAULT_MODEL = "gpt-4.1-mini"
 
 
 class OpenAIProvider(AIProvider):
@@ -79,8 +87,8 @@ class OpenAIProvider(AIProvider):
                 error=str(exc),
             )
 
-    # o1/o1-mini are text-only; reasoning models don't accept image input
-    _VISION_MODELS = {"gpt-4o", "gpt-4o-mini", "gpt-4-turbo"}
+    # o-series and GPT-4.1 reasoning models are vision-capable; o1/o3 text-only
+    _VISION_MODELS = {"gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini"}
 
     def supports_vision(self, model: Optional[str] = None) -> bool:
         return (model or _DEFAULT_MODEL) in self._VISION_MODELS

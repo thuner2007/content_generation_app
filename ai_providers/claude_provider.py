@@ -4,15 +4,19 @@ from typing import Optional
 from ai_providers.base import AIProvider, GenerationResult
 from storage.asset_repo import get_api_key
 
-# Pricing per 1M tokens (input, output)
+# Pricing per 1M tokens (input, output) as of May 2026
 _PRICING: dict[str, tuple[float, float]] = {
+    # Claude 4 series (2025–2026) — latest generation
+    "claude-opus-4-7":            (15.00, 75.00),
+    "claude-sonnet-4-6":          (3.00,  15.00),
+    "claude-haiku-4-5-20251001":  (0.80,   4.00),
+    # Claude 3.5 series (legacy, still supported)
     "claude-3-5-sonnet-20241022": (3.00,  15.00),
     "claude-3-5-haiku-20241022":  (0.80,   4.00),
     "claude-3-opus-20240229":     (15.00, 75.00),
-    "claude-3-haiku-20240307":    (0.25,   1.25),
 }
 
-_DEFAULT_MODEL = "claude-3-5-haiku-20241022"
+_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 
 
 class ClaudeProvider(AIProvider):

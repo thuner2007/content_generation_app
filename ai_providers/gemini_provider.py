@@ -4,15 +4,21 @@ from typing import Optional
 from ai_providers.base import AIProvider, GenerationResult
 from storage.asset_repo import get_api_key
 
-# Pricing per 1M tokens (input, output)
+# Pricing per 1M tokens (input, output) as of May 2026
 _PRICING: dict[str, tuple[float, float]] = {
+    # Gemini 3.5 — released Google I/O May 2026
+    "gemini-3.5-flash":       (0.10,  0.40),
+    # Gemini 2.5 series — GA stable
+    "gemini-2.5-flash":       (0.075, 0.30),
+    "gemini-2.5-pro":         (1.25, 10.00),
+    # Gemini 2.0 (legacy, still supported)
     "gemini-2.0-flash":       (0.10,  0.40),
+    # Gemini 1.5 (legacy)
     "gemini-1.5-flash":       (0.35,  1.05),
-    "gemini-1.5-flash-8b":    (0.075, 0.30),
     "gemini-1.5-pro":         (3.50, 10.50),
 }
 
-_DEFAULT_MODEL = "gemini-2.0-flash"
+_DEFAULT_MODEL = "gemini-2.5-flash"
 
 
 class GeminiProvider(AIProvider):

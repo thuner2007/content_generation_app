@@ -22,24 +22,57 @@ class RightPanel:
     # ── Build ──────────────────────────────────────────────────────────────────
 
     def build(self) -> ft.Container:
+        self._collapsed = False
         self._tools_area = ft.Container(expand=True, content=self._build_tools_section())
         self._cost_bar = self._build_cost_bar()
 
         self._container = ft.Container(
-            content=ft.Column(
-                controls=[
-                    self._tools_area,
-                    T.divider(),
-                    self._cost_bar,
-                ],
-                spacing=0,
-                expand=True,
-            ),
+            content=self._build_expanded_content(),
             width=T.PANEL_WIDTH,
             bgcolor=T.BG_SIDEBAR,
             padding=0,
         )
         return self._container
+
+    def _build_expanded_content(self) -> ft.Column:
+        return ft.Column(
+            controls=[
+                self._tools_area,
+                T.divider(),
+                self._cost_bar,
+            ],
+            spacing=0,
+            expand=True,
+        )
+
+    def _build_collapsed_strip(self) -> ft.Column:
+        return ft.Column(
+            controls=[
+                ft.IconButton(
+                    icon=ft.Icons.CHEVRON_LEFT,
+                    tooltip="Show Quick Launch",
+                    on_click=lambda e: self._toggle_panel(),
+                    icon_color=T.TEXT_MUTED,
+                    icon_size=16,
+                    style=ft.ButtonStyle(
+                        overlay_color={"": ft.Colors.TRANSPARENT, "hovered": T.ACCENT_DIM},
+                    ),
+                ),
+            ],
+            alignment=ft.MainAxisAlignment.START,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
+    def _toggle_panel(self) -> None:
+        self._collapsed = not self._collapsed
+        if self._collapsed:
+            self._container.width = 28
+            self._container.content = self._build_collapsed_strip()
+        else:
+            self._tools_area.content = self._build_tools_section()
+            self._container.width = T.PANEL_WIDTH
+            self._container.content = self._build_expanded_content()
+        self._container.update()
 
     # ── Section builders ───────────────────────────────────────────────────────
 
@@ -96,9 +129,26 @@ class RightPanel:
         return ft.Column(
             controls=[
                 ft.Container(
-                    content=ft.Text("Quick Launch", size=12, weight=ft.FontWeight.W_600,
+                    content=ft.Row(
+                        controls=[
+                            ft.Text("Quick Launch", size=12, weight=ft.FontWeight.W_600,
                                     color=T.TEXT_MUTED, style=ft.TextStyle(letter_spacing=1.0)),
-                    padding=ft.padding.only(left=14, top=14, bottom=8),
+                            ft.Container(expand=True),
+                            ft.IconButton(
+                                icon=ft.Icons.CHEVRON_RIGHT,
+                                tooltip="Hide panel",
+                                on_click=lambda e: self._toggle_panel(),
+                                icon_color=T.TEXT_MUTED,
+                                icon_size=16,
+                                style=ft.ButtonStyle(
+                                    overlay_color={"": ft.Colors.TRANSPARENT, "hovered": T.ACCENT_DIM},
+                                    padding=ft.padding.all(4),
+                                ),
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    padding=ft.padding.only(left=14, top=10, bottom=4, right=4),
                 ),
                 ft.Container(
                     content=ft.Column(controls=tool_cards, spacing=8, scroll=ft.ScrollMode.AUTO, expand=True),
@@ -178,7 +228,7 @@ class RightPanel:
 
     def refresh(self) -> None:
         """Rebuild tools and cost bar (e.g. after project switch or cost update)."""
-        if not self._container:
+        if not self._container or getattr(self, "_collapsed", False):
             return
         try:
             self._tools_area.content = self._build_tools_section()

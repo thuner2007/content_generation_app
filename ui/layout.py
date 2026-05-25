@@ -10,6 +10,7 @@ from ui.asset_view import AssetView
 from ui.settings_view import SettingsView
 from ui.brief_view import BriefView
 from ui.brand_view import BrandView
+from ui.campaign_view import CampaignView
 from storage.project_repo import get_project
 
 
@@ -63,24 +64,27 @@ class AppLayout:
 
     # ── Navigation ─────────────────────────────────────────────────────────────
 
+    def _switch_view(self, content: ft.Control) -> None:
+        """Replace the main area content and do a full page update so any
+        controls added to page.overlay during build() are properly mounted."""
+        self._main_area.content = content
+        self.page.update()
+
     def show_chat_view(self) -> None:
         self.state.current_view = "chat"
-        self._main_area.content = self.chat_view.build()
+        self._switch_view(self.chat_view.build())
         self.chat_view.on_project_changed()
         self.right_panel.refresh()
-        self._main_area.update()
 
     def show_assets_view(self) -> None:
         self.state.current_view = "assets"
         asset_view = AssetView(page=self.page, app=self)
-        self._main_area.content = asset_view.build()
-        self._main_area.update()
+        self._switch_view(asset_view.build())
 
     def show_settings_view(self) -> None:
         self.state.current_view = "settings"
         settings_view = SettingsView(page=self.page, app=self)
-        self._main_area.content = settings_view.build()
-        self._main_area.update()
+        self._switch_view(settings_view.build())
 
     def show_brand_view(self) -> None:
         self.state.current_view = "brand"
@@ -90,8 +94,12 @@ class AppLayout:
             if fresh:
                 self.state.current_project = fresh
         brand_view = BrandView(page=self.page, app=self)
-        self._main_area.content = brand_view.build()
-        self._main_area.update()
+        self._switch_view(brand_view.build())
+
+    def show_campaigns_view(self) -> None:
+        self.state.current_view = "campaigns"
+        campaign_view = CampaignView(page=self.page, app=self)
+        self._switch_view(campaign_view.build())
 
     def show_brief_view(self) -> None:
         self.state.current_view = "brief"
@@ -101,12 +109,16 @@ class AppLayout:
             if fresh:
                 self.state.current_project = fresh
         brief_view = BriefView(page=self.page, app=self)
-        self._main_area.content = brief_view.build()
-        self._main_area.update()
+        self._switch_view(brief_view.build())
 
     def refresh_brief_if_active(self) -> None:
         if self.state.current_view == "brief":
             self.show_brief_view()
+
+    def trigger_new_project_setup(self) -> None:
+        """Called after a new project is created — switches to chat and shows setup wizard."""
+        self.show_chat_view()
+        self.chat_view.show_new_project_welcome()
 
     # ── Refresh hooks ──────────────────────────────────────────────────────────
 

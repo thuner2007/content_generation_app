@@ -14,6 +14,24 @@ CATALOG: list[dict] = [
 
     # ── Vision models ──────────────────────────────────────────────────────────
     {
+        "id":          "llama4:scout",
+        "label":       "Llama 4 Scout",
+        "size_gb":     8.5,
+        "description": "Meta's Llama 4 Scout — 17B active / 109B total MoE. Multimodal, fast, runs on 10 GB VRAM.",
+        "tags":        ["newest", "vision", "balanced", "recommended"],
+        "category":    "vision",
+        "vision":      True,
+    },
+    {
+        "id":          "gemma3:27b",
+        "label":       "Gemma 3 27B",
+        "size_gb":     16.0,
+        "description": "Google's largest Gemma 3. Full multimodal support — understands images and text.",
+        "tags":        ["quality", "vision"],
+        "category":    "vision",
+        "vision":      True,
+    },
+    {
         "id":          "moondream",
         "label":       "Moondream",
         "size_gb":     1.7,
@@ -61,6 +79,51 @@ CATALOG: list[dict] = [
 
     # ── Chat & writing ─────────────────────────────────────────────────────────
     {
+        "id":          "qwen3:1.7b",
+        "label":       "Qwen 3 1.7B",
+        "size_gb":     1.0,
+        "description": "Alibaba's tiny Qwen 3. Hybrid thinking mode, strong multilingual. Fastest local model.",
+        "tags":        ["tiny", "fast", "multilingual", "newest"],
+        "category":    "chat",
+        "vision":      False,
+    },
+    {
+        "id":          "qwen3:4b",
+        "label":       "Qwen 3 4B",
+        "size_gb":     2.6,
+        "description": "Qwen 3 4B — beats Qwen 2.5 7B on most benchmarks at half the size.",
+        "tags":        ["fast", "multilingual", "recommended", "newest"],
+        "category":    "chat",
+        "vision":      False,
+    },
+    {
+        "id":          "qwen3:8b",
+        "label":       "Qwen 3 8B",
+        "size_gb":     5.2,
+        "description": "Alibaba's latest 8B with hybrid thinking mode. Strong reasoning + multilingual.",
+        "tags":        ["balanced", "multilingual", "newest"],
+        "category":    "chat",
+        "vision":      False,
+    },
+    {
+        "id":          "qwen3:14b",
+        "label":       "Qwen 3 14B",
+        "size_gb":     9.3,
+        "description": "Qwen 3 14B — high quality output with thinking mode. Best-in-class for its size.",
+        "tags":        ["quality", "multilingual", "newest"],
+        "category":    "chat",
+        "vision":      False,
+    },
+    {
+        "id":          "qwen3:30b-a3b",
+        "label":       "Qwen 3 30B MoE",
+        "size_gb":     18.0,
+        "description": "Qwen 3 30B MoE — only 3B active parameters per token. Near-70B quality at 10B cost.",
+        "tags":        ["quality", "multilingual", "moe", "newest"],
+        "category":    "chat",
+        "vision":      False,
+    },
+    {
         "id":          "llama3.2:1b",
         "label":       "Llama 3.2 1B",
         "size_gb":     0.8,
@@ -100,19 +163,19 @@ CATALOG: list[dict] = [
         "id":          "gemma3:4b",
         "label":       "Gemma 3 4B",
         "size_gb":     3.3,
-        "description": "Google's efficient 4B model. Good all-around performance.",
-        "tags":        ["balanced", "recommended"],
+        "description": "Google's 4B multimodal model — understands images and text. Strong all-around.",
+        "tags":        ["balanced", "recommended", "vision"],
         "category":    "chat",
-        "vision":      False,
+        "vision":      True,
     },
     {
         "id":          "gemma3:12b",
         "label":       "Gemma 3 12B",
         "size_gb":     8.1,
-        "description": "Google's larger Gemma. Higher quality responses and stronger reasoning.",
-        "tags":        ["quality"],
+        "description": "Google's 12B multimodal model. Higher quality responses and stronger reasoning.",
+        "tags":        ["quality", "vision"],
         "category":    "chat",
-        "vision":      False,
+        "vision":      True,
     },
     {
         "id":          "mistral:7b",
@@ -179,6 +242,15 @@ CATALOG: list[dict] = [
     },
 
     # ── Reasoning ─────────────────────────────────────────────────────────────
+    {
+        "id":          "qwen3:32b",
+        "label":       "Qwen 3 32B",
+        "size_gb":     20.0,
+        "description": "Qwen 3's flagship dense model. Hybrid thinking mode — top-tier reasoning and coding.",
+        "tags":        ["quality", "thinking", "newest"],
+        "category":    "reasoning",
+        "vision":      False,
+    },
     {
         "id":          "deepseek-r1:7b",
         "label":       "DeepSeek R1 7B",

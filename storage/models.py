@@ -14,6 +14,18 @@ class Project:
     legal_info: str = ""
     description: str = ""
     marketing_brief: str = ""
+    image_style: str = ""
+    # Brand voice & positioning
+    tone_of_voice: str = ""
+    brand_values: str = ""
+    # Audio & video direction
+    voiceover_voice: str = ""
+    music_mood: str = ""
+    video_style: str = ""
+    # Audience & content strategy
+    target_audience: str = ""
+    content_pillars: str = ""
+    hashtags: str = ""
     created_at: str = ""
     updated_at: str = ""
 
@@ -82,3 +94,38 @@ class ProjectFile:
     file_type: str = ""
     extracted_text: str = ""
     created_at: str = ""
+
+
+@dataclass
+class Product:
+    id: str
+    project_id: str
+    name: str
+    description: str = ""
+    price: str = ""
+    url: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class Campaign:
+    id: str
+    project_id: str
+    name: str
+    status: str = "draft"        # draft | active | paused | completed
+    strategy: str = ""           # awareness | conversion | retargeting | lead_gen | brand | retention
+    objective: str = ""          # traffic | leads | sales | awareness | engagement | app_installs | video_views
+    platforms: str = "[]"        # JSON list e.g. '["meta","google"]'
+    daily_budget: float = 0.0
+    total_budget: float = 0.0
+    start_date: str = ""
+    end_date: str = ""
+    target_audience: str = ""
+    notes: str = ""
+    product_name: str = ""
+    product_description: str = ""
+    video_ideas: str = "[]"      # JSON list of {id, title, concept, how_to_film, how_to_cut, scheduled_date, format, pub_status}
+    product_ids: str = "[]"      # JSON list of project product IDs promoted in this campaign
+    created_at: str = ""
+    updated_at: str = ""

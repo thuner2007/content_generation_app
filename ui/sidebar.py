@@ -102,6 +102,7 @@ class Sidebar:
 
     def _bottom_nav(self) -> ft.Column:
         items = [
+            (ft.Icons.ROCKET_LAUNCH_OUTLINED, "Campaigns", "campaigns"),
             (ft.Icons.PALETTE_OUTLINED, "Brand", "brand"),
             (ft.Icons.CAMPAIGN_OUTLINED, "Brief", "brief"),
             (ft.Icons.PHOTO_LIBRARY_OUTLINED, "Assets", "assets"),
@@ -218,7 +219,9 @@ class Sidebar:
     def _navigate(self, view: str) -> None:
         self.state.current_view = view
         self.refresh()
-        if view == "assets":
+        if view == "campaigns":
+            self.app.show_campaigns_view()
+        elif view == "assets":
             self.app.show_assets_view()
         elif view == "settings":
             self.app.show_settings_view()
@@ -255,7 +258,7 @@ class Sidebar:
             self._cur_dialog.open = False
             self.page.update()
             self.refresh()
-            self.app.show_chat_view()
+            self.app.trigger_new_project_setup()
 
         def cancel(e):
             self._cur_dialog.open = False

@@ -9,6 +9,10 @@ from storage.asset_repo import save_api_key, get_all_api_keys
 from ai_providers.router import list_providers
 from ai_providers.local_model_catalog import CATALOG, CATEGORY_ORDER, _CATEGORY_META
 from ai_providers.local_image_provider import IMAGE_MODEL_CATALOG, _TIER_LABELS, get_gpu_info
+from ai_providers.cloud_media_catalog import (
+    CLOUD_IMAGE_CATALOG, CLOUD_VIDEO_CATALOG, CLOUD_DEDICATED_KEYS,
+    _CLOUD_CATEGORY_LABELS,
+)
 from ai_providers.ollama_provider import (
     is_ollama_running,
     is_ollama_installed,
@@ -32,6 +36,25 @@ _CACHE_TTL = 30.0  # seconds
 _REBUILD_TIMER: dict = {"timer": None}
 
 
+def _pkg_installed(import_name: str) -> bool:
+    """Return True if the given dotted import name is importable."""
+    import importlib.util
+    try:
+        return importlib.util.find_spec(import_name) is not None
+    except (ModuleNotFoundError, ValueError):
+        return False
+
+
+_PROVIDER_PACKAGES: dict[str, list[tuple[str, str]]] = {
+    "openai":  [("openai",              "openai")],
+    "claude":  [("anthropic",           "anthropic")],
+    "gemini":  [
+        ("google.generativeai", "google-generativeai"),
+        ("google.genai",        "google-genai"),
+    ],
+}
+
+
 def _debounced_rebuild(app: "AppLayout", view_state, delay: float = 0.5) -> None:
     """Schedule one settings rebuild; cancels any already-pending rebuild."""
     if _REBUILD_TIMER["timer"] is not None:
@@ -51,19 +74,19 @@ def _debounced_rebuild(app: "AppLayout", view_state, delay: float = 0.5) -> None
 _PROVIDER_INFO = {
     "openai": {
         "label": "OpenAI",
-        "desc": "GPT-4o, GPT-4o-mini, o1 and more",
+        "desc": "GPT-4.1, o3, o4-mini, GPT-4o — also enables Sora video & GPT-Image-1",
         "url": "https://platform.openai.com/api-keys",
         "icon": "🟢",
     },
     "claude": {
         "label": "Anthropic Claude",
-        "desc": "Claude 3.5 Sonnet, Haiku, Opus",
+        "desc": "Claude Opus 4.7, Sonnet 4.6, Haiku 4.5",
         "url": "https://console.anthropic.com/settings/keys",
         "icon": "🟠",
     },
     "gemini": {
         "label": "Google Gemini",
-        "desc": "Gemini 2.0 Flash, 1.5 Pro",
+        "desc": "Gemini 3.5 Flash, 2.5 Pro/Flash — also enables Nano Banana Pro images",
         "url": "https://aistudio.google.com/apikey",
         "icon": "🔵",
     },
@@ -74,6 +97,66 @@ class SettingsView:
     def __init__(self, page: ft.Page, app: "AppLayout"):
         self.page = page
         self.app = app
+
+    def _make_install_btn(self, pkgs: list[str], label: str):
+        """Return (button, status_text) that runs pip install <pkgs> on click."""
+        btn_ref  = ft.Ref[ft.ElevatedButton]()
+        stat_ref = ft.Ref[ft.Text]()
+
+        def on_install(e):
+            btn_ref.current.disabled = True
+            btn_ref.current.text = "Installing…"
+            stat_ref.current.value = "This may take a few minutes…"
+            try:
+                self.page.update()
+            except Exception:
+                pass
+
+            def run():
+                import subprocess, sys
+                try:
+                    proc = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "--upgrade"] + pkgs,
+                        capture_output=True, text=True, timeout=600,
+                    )
+                    if proc.returncode == 0:
+                        stat_ref.current.value = f"{label} installed ✓"
+                        _IMGDEPS_STATE["ts"] = 0.0
+                        _debounced_rebuild(self.app, self.app.state, delay=0.5)
+                    else:
+                        err = (proc.stderr or proc.stdout or "unknown error").strip()[-200:]
+                        stat_ref.current.value = f"Failed: {err}"
+                        btn_ref.current.disabled = False
+                        btn_ref.current.text = "Retry"
+                except subprocess.TimeoutExpired:
+                    stat_ref.current.value = "Timed out — try running pip manually"
+                    btn_ref.current.disabled = False
+                    btn_ref.current.text = "Retry"
+                except Exception as exc:
+                    stat_ref.current.value = f"Error: {exc}"
+                    btn_ref.current.disabled = False
+                    btn_ref.current.text = "Retry"
+                try:
+                    self.page.update()
+                except Exception:
+                    pass
+
+            threading.Thread(target=run, daemon=True).start()
+
+        btn = ft.ElevatedButton(
+            ref=btn_ref,
+            text=f"Install {label}",
+            icon=ft.Icons.DOWNLOAD_OUTLINED,
+            on_click=on_install,
+            style=ft.ButtonStyle(
+                bgcolor={"": T.ACCENT, "disabled": T.BG_SECONDARY},
+                color={"": "#ffffff", "disabled": T.TEXT_MUTED},
+                shape=ft.RoundedRectangleBorder(radius=7),
+                padding=ft.padding.symmetric(horizontal=14, vertical=8),
+            ),
+        )
+        stat = ft.Text(ref=stat_ref, value="", size=11, color=T.TEXT_MUTED, italic=True)
+        return btn, stat
 
     def build(self) -> ft.Column:
         existing_keys = get_all_api_keys()
@@ -106,6 +189,46 @@ class SettingsView:
             key_fields[provider] = tf
 
             is_configured = bool(existing.strip())
+
+            # Package dependency row
+            _pkg_entries = _PROVIDER_PACKAGES.get(provider, [])
+            _missing = [(imp, pip) for imp, pip in _pkg_entries if not _pkg_installed(imp)]
+            _pkg_controls: list[ft.Control] = []
+            if _missing:
+                _pip_names = [pip for _, pip in _missing]
+                _disp_label = " + ".join(imp.split(".")[0] for imp, _ in _missing)
+                _inst_btn, _inst_stat = self._make_install_btn(_pip_names, _disp_label)
+                _pkg_controls.append(
+                    ft.Container(
+                        content=ft.Column(
+                            controls=[
+                                ft.Row(
+                                    controls=[
+                                        ft.Icon(ft.Icons.WARNING_AMBER_OUTLINED, size=13, color="#f59e0b"),
+                                        ft.Text(
+                                            f"Package{'s' if len(_pip_names) > 1 else ''} not installed: {', '.join(_pip_names)}",
+                                            size=11, color="#f59e0b", expand=True,
+                                        ),
+                                    ],
+                                    spacing=6,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                                ft.Row(
+                                    controls=[_inst_btn, _inst_stat],
+                                    spacing=10,
+                                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                ),
+                            ],
+                            spacing=6,
+                            tight=True,
+                        ),
+                        bgcolor="#451a03",
+                        border_radius=6,
+                        padding=ft.padding.symmetric(horizontal=10, vertical=8),
+                        border=ft.border.all(1, "#92400e"),
+                    )
+                )
+
             provider_cards.append(
                 ft.Container(
                     content=ft.Column(
@@ -150,6 +273,7 @@ class SettingsView:
                                 spacing=8,
                                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                             ),
+                            *_pkg_controls,
                         ],
                         spacing=12,
                     ),
@@ -167,6 +291,12 @@ class SettingsView:
                 # Skip if it looks like a masked existing key (all dots)
                 if val and not all(c in "•" for c in val):
                     save_api_key(provider, val)
+                    # Invalidate the balance cache so the header re-fetches
+                    try:
+                        from ai_providers.balance_fetcher import invalidate
+                        invalidate(provider)
+                    except Exception:
+                        pass
                     saved_any = True
             if saved_any:
                 self._snack("API keys saved ✓")
@@ -213,6 +343,10 @@ class SettingsView:
                             T.divider(),
                             ft.Container(height=16),
                             self._build_local_image_section(),
+                            ft.Container(height=24),
+                            T.divider(),
+                            ft.Container(height=16),
+                            self._build_cloud_media_section(),
                             ft.Container(height=24),
                             T.divider(),
                             ft.Container(height=16),
@@ -834,67 +968,6 @@ class SettingsView:
         _hub_missing      = "huggingface_hub" in missing_pkgs
         _checking         = not bool(deps)
 
-        # ── pip install helper ───────────────────────────────────────────────
-        def _make_install_btn(pkgs: list[str], label: str):
-            """Return (button, status_text) that runs pip install <pkgs> on click."""
-            btn_ref  = ft.Ref[ft.ElevatedButton]()
-            stat_ref = ft.Ref[ft.Text]()
-
-            def on_install(e):
-                btn_ref.current.disabled = True
-                btn_ref.current.text = "Installing…"
-                stat_ref.current.value = "This may take a few minutes…"
-                try:
-                    self.page.update()
-                except Exception:
-                    pass
-
-                def run():
-                    import subprocess, sys
-                    try:
-                        proc = subprocess.run(
-                            [sys.executable, "-m", "pip", "install", "--upgrade"] + pkgs,
-                            capture_output=True, text=True, timeout=600,
-                        )
-                        if proc.returncode == 0:
-                            stat_ref.current.value = f"{label} installed ✓"
-                            _IMGDEPS_STATE["ts"] = 0.0  # force re-check on next rebuild
-                            _debounced_rebuild(self.app, self.app.state, delay=0.5)
-                        else:
-                            err = (proc.stderr or proc.stdout or "unknown error").strip()[-200:]
-                            stat_ref.current.value = f"Failed: {err}"
-                            btn_ref.current.disabled = False
-                            btn_ref.current.text = "Retry"
-                    except subprocess.TimeoutExpired:
-                        stat_ref.current.value = "Timed out — try running pip manually"
-                        btn_ref.current.disabled = False
-                        btn_ref.current.text = "Retry"
-                    except Exception as exc:
-                        stat_ref.current.value = f"Error: {exc}"
-                        btn_ref.current.disabled = False
-                        btn_ref.current.text = "Retry"
-                    try:
-                        self.page.update()
-                    except Exception:
-                        pass
-
-                threading.Thread(target=run, daemon=True).start()
-
-            btn = ft.ElevatedButton(
-                ref=btn_ref,
-                text=f"Install {label}",
-                icon=ft.Icons.DOWNLOAD_OUTLINED,
-                on_click=on_install,
-                style=ft.ButtonStyle(
-                    bgcolor={"": T.ACCENT, "disabled": T.BG_SECONDARY},
-                    color={"": "#ffffff", "disabled": T.TEXT_MUTED},
-                    shape=ft.RoundedRectangleBorder(radius=7),
-                    padding=ft.padding.symmetric(horizontal=14, vertical=8),
-                ),
-            )
-            stat = ft.Text(ref=stat_ref, value="", size=11, color=T.TEXT_MUTED, italic=True)
-            return btn, stat
-
         if _checking:
             _deps_icon    = ft.Icons.SYNC_OUTLINED
             _deps_color   = T.TEXT_MUTED
@@ -904,14 +977,14 @@ class SettingsView:
             _deps_icon    = ft.Icons.ERROR_OUTLINE
             _deps_color   = "#f59e0b"
             _deps_text    = "huggingface_hub not installed — required to download models"
-            _hub_btn, _hub_stat = _make_install_btn(["huggingface_hub"], "huggingface_hub")
+            _hub_btn, _hub_stat = self._make_install_btn(["huggingface_hub"], "huggingface_hub")
             _deps_rows    = [ft.Row(controls=[_hub_btn, _hub_stat], spacing=10,
                                     vertical_alignment=ft.CrossAxisAlignment.CENTER)]
         elif _gen_pkgs_missing:
             _deps_icon    = ft.Icons.WARNING_AMBER_OUTLINED
             _deps_color   = "#f59e0b"
             _deps_text    = f"Generation packages missing: {', '.join(_gen_pkgs_missing)}"
-            _gen_btn, _gen_stat = _make_install_btn(
+            _gen_btn, _gen_stat = self._make_install_btn(
                 ["diffusers", "transformers", "accelerate", "torch"], "generation packages"
             )
             _deps_rows    = [
@@ -1402,6 +1475,207 @@ class SettingsView:
             ],
             spacing=8,
         )
+
+    def _build_cloud_media_section(self) -> ft.Column:
+        """Cards for cloud image and video generation APIs."""
+        from storage.settings_repo import get_setting, set_setting
+        from storage.asset_repo import save_api_key, get_all_api_keys
+
+        existing_keys = get_all_api_keys()
+
+        def _make_service_card(entry: dict) -> ft.Container:
+            key_name    = entry["setting_key"]
+            is_shared   = key_name in ("openai", "claude", "gemini")
+            configured  = bool(existing_keys.get(key_name, "").strip())
+
+            tag_chips = ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Text(t, size=10, color=T.ACCENT_LIGHT),
+                        bgcolor=T.BG_SECONDARY,
+                        border_radius=4,
+                        padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                        border=ft.border.all(1, T.BORDER),
+                    )
+                    for t in entry.get("tags", [])
+                ],
+                spacing=4, wrap=True,
+            )
+
+            key_row_controls: list = []
+            save_badge = ft.Text("", size=11, color=T.SUCCESS)
+
+            if not is_shared:
+                tf = ft.TextField(
+                    label=f"{entry['label']} API Key",
+                    value=("•" * 8 + existing_keys[key_name][-4:])
+                          if len(existing_keys.get(key_name, "")) > 8
+                          else existing_keys.get(key_name, ""),
+                    password=True,
+                    can_reveal_password=True,
+                    hint_text="Enter API key",
+                    bgcolor=T.BG_INPUT, border_color=T.BORDER,
+                    focused_border_color=T.ACCENT, color=T.TEXT_PRIMARY,
+                    label_style=ft.TextStyle(color=T.TEXT_MUTED),
+                    hint_style=ft.TextStyle(color=T.TEXT_MUTED),
+                    cursor_color=T.ACCENT_LIGHT, border_radius=8,
+                    content_padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                    expand=True,
+                )
+
+                def make_save(k=key_name, field=tf, badge=save_badge):
+                    def do_save(e):
+                        val = field.value.strip()
+                        if val and not all(c == "•" for c in val):
+                            save_api_key(k, val)
+                            badge.value = "Saved ✓"
+                            try:
+                                badge.update()
+                            except Exception:
+                                pass
+                    return do_save
+
+                key_row_controls = [
+                    ft.Row(
+                        controls=[
+                            tf,
+                            ft.TextButton(
+                                "Get Key",
+                                url=entry["api_url"],
+                                style=ft.ButtonStyle(color=T.TEXT_ACCENT),
+                            ),
+                            ft.ElevatedButton(
+                                "Save",
+                                on_click=make_save(),
+                                style=ft.ButtonStyle(
+                                    bgcolor={"": T.ACCENT, "disabled": T.BG_SECONDARY},
+                                    color={"": "#ffffff", "disabled": T.TEXT_MUTED},
+                                    shape=ft.RoundedRectangleBorder(radius=6),
+                                    padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                                ),
+                            ),
+                            save_badge,
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ]
+            else:
+                key_row_controls = [
+                    ft.Row(
+                        controls=[
+                            ft.Icon(
+                                ft.Icons.CHECK_CIRCLE_OUTLINED if configured else ft.Icons.INFO_OUTLINE,
+                                size=13,
+                                color=T.SUCCESS if configured else T.TEXT_MUTED,
+                            ),
+                            ft.Text(
+                                f"Uses your {key_name.title()} API key (configured above)"
+                                if configured
+                                else f"Add your {key_name.title()} key above to enable this",
+                                size=11,
+                                color=T.SUCCESS if configured else T.TEXT_MUTED,
+                            ),
+                            ft.TextButton(
+                                "Docs",
+                                url=entry["docs_url"],
+                                style=ft.ButtonStyle(color=T.TEXT_ACCENT),
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ]
+
+            return ft.Container(
+                content=ft.Column(
+                    controls=[
+                        ft.Row(
+                            controls=[
+                                ft.Column(
+                                    controls=[
+                                        ft.Text(
+                                            entry["label"],
+                                            size=13, weight=ft.FontWeight.W_600,
+                                            color=T.TEXT_PRIMARY,
+                                        ),
+                                        ft.Text(
+                                            entry["description"],
+                                            size=11, color=T.TEXT_SECONDARY,
+                                        ),
+                                        ft.Text(
+                                            entry["pricing_note"],
+                                            size=10, color=T.TEXT_MUTED, italic=True,
+                                        ),
+                                        tag_chips,
+                                    ],
+                                    spacing=3, expand=True, tight=True,
+                                ),
+                                ft.Container(
+                                    content=ft.Text(
+                                        "Ready" if configured else "Key needed",
+                                        size=10,
+                                        color=T.SUCCESS if configured else T.TEXT_MUTED,
+                                        weight=ft.FontWeight.W_600,
+                                    ),
+                                    bgcolor="#052e16" if configured else T.BG_SECONDARY,
+                                    border_radius=5,
+                                    padding=ft.padding.symmetric(horizontal=7, vertical=3),
+                                    border=ft.border.all(1, T.SUCCESS if configured else T.BORDER),
+                                ),
+                            ],
+                            spacing=10,
+                            vertical_alignment=ft.CrossAxisAlignment.START,
+                        ),
+                        *key_row_controls,
+                    ],
+                    spacing=8,
+                    tight=True,
+                ),
+                bgcolor=T.BG_CARD, border_radius=10,
+                padding=ft.padding.symmetric(horizontal=16, vertical=14),
+                border=ft.border.all(1, T.SUCCESS if configured else T.BORDER),
+            )
+
+        def _section_header(label: str, icon) -> ft.Container:
+            return ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(icon, size=14, color=T.ACCENT_LIGHT),
+                        ft.Text(label, size=13, weight=ft.FontWeight.W_600, color=T.TEXT_PRIMARY),
+                    ],
+                    spacing=6,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=ft.padding.only(top=8, bottom=2),
+            )
+
+        controls: list[ft.Control] = [
+            ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.CLOUD_OUTLINED, size=16, color=T.ACCENT_LIGHT),
+                    ft.Text("Cloud Image & Video APIs", size=15,
+                            weight=ft.FontWeight.BOLD, color=T.TEXT_PRIMARY),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            ft.Text(
+                "Connect third-party cloud services for image and video generation. "
+                "Shared keys (OpenAI, Gemini) are already configured above.",
+                size=12, color=T.TEXT_MUTED,
+            ),
+            ft.Container(height=4),
+            _section_header(_CLOUD_CATEGORY_LABELS["image"], ft.Icons.IMAGE_OUTLINED),
+        ]
+        for entry in CLOUD_IMAGE_CATALOG:
+            controls.append(_make_service_card(entry))
+
+        controls.append(_section_header(_CLOUD_CATEGORY_LABELS["video"], ft.Icons.VIDEOCAM_OUTLINED))
+        for entry in CLOUD_VIDEO_CATALOG:
+            controls.append(_make_service_card(entry))
+
+        return ft.Column(controls=controls, spacing=8, tight=True)
 
     def _db_path(self):
         from storage.db import get_db_path

@@ -106,6 +106,37 @@ def init_db() -> None:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS campaigns (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                status TEXT DEFAULT 'draft',
+                strategy TEXT DEFAULT '',
+                objective TEXT DEFAULT '',
+                platforms TEXT DEFAULT '[]',
+                daily_budget REAL DEFAULT 0.0,
+                total_budget REAL DEFAULT 0.0,
+                start_date TEXT DEFAULT '',
+                end_date TEXT DEFAULT '',
+                target_audience TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS products (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                price TEXT DEFAULT '',
+                url TEXT DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+            );
         """)
         conn.commit()
 
@@ -116,8 +147,25 @@ def init_db() -> None:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    try:
-        conn.execute("ALTER TABLE projects ADD COLUMN marketing_brief TEXT DEFAULT ''")
-        conn.commit()
-    except Exception:
-        pass  # column already exists
+    migrations = [
+        "ALTER TABLE projects ADD COLUMN marketing_brief TEXT DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN image_style TEXT DEFAULT ''",
+        "ALTER TABLE campaigns ADD COLUMN product_name TEXT DEFAULT ''",
+        "ALTER TABLE campaigns ADD COLUMN product_description TEXT DEFAULT ''",
+        "ALTER TABLE campaigns ADD COLUMN video_ideas TEXT DEFAULT '[]'",
+        "ALTER TABLE campaigns ADD COLUMN product_ids TEXT DEFAULT '[]'",
+        "ALTER TABLE projects ADD COLUMN tone_of_voice TEXT DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN brand_values TEXT DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN voiceover_voice TEXT DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN music_mood TEXT DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN video_style TEXT DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN target_audience TEXT DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN content_pillars TEXT DEFAULT ''",
+        "ALTER TABLE projects ADD COLUMN hashtags TEXT DEFAULT ''",
+    ]
+    for sql in migrations:
+        try:
+            conn.execute(sql)
+            conn.commit()
+        except Exception:
+            pass  # column already exists

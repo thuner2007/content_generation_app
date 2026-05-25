@@ -27,8 +27,18 @@ class AssetView:
         self.state: AppState = app.state
         self._current_filter = "all"
         self._asset_grid: ft.Column | None = None
+        self._save_picker: ft.FilePicker | None = None
+        self._save_pending_path: str = ""
 
     def build(self) -> ft.Column:
+        if self._save_picker in self.page.overlay:
+            try:
+                self.page.overlay.remove(self._save_picker)
+            except Exception:
+                pass
+        self._save_picker = ft.FilePicker(on_result=self._on_save_result)
+        self.page.overlay.append(self._save_picker)
+
         self._asset_grid = ft.Column(spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
         self._load_assets()
         return ft.Column(
@@ -149,6 +159,18 @@ class AssetView:
         path = asset.content  # content stores the file path for image assets
         actions = ft.Row(
             controls=[
+                T.icon_button(
+                    ft.Icons.DOWNLOAD_OUTLINED,
+                    "Download image",
+                    on_click=lambda e, p=path: self._download_image(p),
+                    size=15,
+                ),
+                T.icon_button(
+                    ft.Icons.CONTENT_COPY_OUTLINED,
+                    "Copy image to clipboard",
+                    on_click=lambda e, p=path: self._copy_image(p),
+                    size=15,
+                ),
                 T.icon_button(
                     ft.Icons.FOLDER_OPEN_OUTLINED,
                     "Open folder",
@@ -321,6 +343,67 @@ class AssetView:
         except Exception:
             pass
 
+    def _download_image(self, path: str) -> None:
+        import os
+        self._save_pending_path = path
+        if self._save_picker:
+            self._save_picker.save_file(
+                dialog_title="Save Image",
+                file_name=os.path.basename(path),
+                allowed_extensions=["png", "jpg", "jpeg", "webp"],
+            )
+
+    def _on_save_result(self, e) -> None:
+        dest = getattr(e, "path", None)
+        if not dest or not self._save_pending_path:
+            return
+        import shutil
+        try:
+            shutil.copy2(self._save_pending_path, dest)
+            self._snack("Image saved ✓")
+        except Exception as exc:
+            self._snack(f"Could not save: {exc}", error=True)
+
+    def _copy_image(self, path: str) -> None:
+        import subprocess, sys
+        try:
+            if sys.platform == "win32":
+                ps = (
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "Add-Type -AssemblyName System.Drawing; "
+                    f"$img = [System.Drawing.Image]::FromFile('{path}'); "
+                    "[System.Windows.Forms.Clipboard]::SetImage($img); "
+                    "$img.Dispose()"
+                )
+                subprocess.run(["powershell", "-Command", ps], timeout=10, check=True)
+            elif sys.platform == "darwin":
+                subprocess.run(
+                    ["osascript", "-e", f'set the clipboard to (read (POSIX file "{path}") as «class PNGf»)'],
+                    timeout=10, check=True,
+                )
+            else:
+                subprocess.run(
+                    ["xclip", "-selection", "clipboard", "-t", "image/png", "-i", path],
+                    timeout=10, check=True,
+                )
+            self._snack("Image copied to clipboard ✓")
+        except FileNotFoundError:
+            self.page.set_clipboard(path)
+            self._snack("Copied image path (install xclip for full image copy on Linux)")
+        except Exception:
+            self.page.set_clipboard(path)
+            self._snack("Copied image path to clipboard")
+
+    def _snack(self, message: str, error: bool = False) -> None:
+        from ui import theme as _T
+        bar = ft.SnackBar(
+            content=ft.Text(message, color=_T.TEXT_PRIMARY),
+            bgcolor=_T.ERROR if error else _T.BG_CARD,
+        )
+        self.page.overlay.append(bar)
+        bar.open = True
+        self.page.update()
+
     def _copy(self, content: str) -> None:
         self.page.set_clipboard(content)
         self._cur_snackbar = ft.SnackBar(
@@ -362,7 +445,6 @@ class AssetView:
             actions_alignment=ft.MainAxisAlignment.END,
             shape=ft.RoundedRectangleBorder(radius=12),
         )
-        self.page.overlay.clear()
         self.page.overlay.append(self._cur_dialog)
         self._cur_dialog.open = True
         self.page.update()

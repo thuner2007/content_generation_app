@@ -1,6 +1,7 @@
 """Main chat workspace view."""
 import json as _json
 import threading
+import time as _time
 import flet as ft
 from typing import TYPE_CHECKING
 
@@ -14,6 +15,11 @@ from ai_providers.router import list_providers, get_models_for_provider
 
 if TYPE_CHECKING:
     from ui.layout import AppLayout
+
+# Cache so the model picker opens instantly without blocking the UI thread.
+_PICKER_OLLAMA_CACHE: dict = {"ts": 0.0, "ok": False, "installed": frozenset()}
+_PICKER_CACHE_TTL = 30.0
+
 
 def _save_default(provider: str, model: str) -> None:
     from storage.settings_repo import set_setting
@@ -349,6 +355,41 @@ _GENERATION_TYPES = [
     ("local_image",   ft.Icons.AUTO_AWESOME,             "Local Image",   "Generate image locally with FLUX / SD"),
 ]
 
+# Provider display info used in the model picker
+_PROVIDER_DISPLAY: dict[str, dict] = {
+    "openai": {"emoji": "🟢", "label": "OpenAI"},
+    "claude": {"emoji": "🟠", "label": "Claude"},
+    "gemini": {"emoji": "🔵", "label": "Gemini"},
+    "ollama": {"emoji": "💻", "label": "Ollama"},
+    "local":  {"emoji": "✨", "label": "Image"},
+}
+
+# Per-model display hints (tags + price) for the picker
+_PICKER_META: dict[str, dict] = {
+    "gpt-4.1":                    {"tags": ["coding", "vision"],        "price": "$2/1M",     "rec": True},
+    "gpt-4.1-mini":               {"tags": ["fast", "vision"],          "price": "$0.40/1M",  "rec": True},
+    "gpt-4.1-nano":               {"tags": ["cheapest", "fast"],        "price": "$0.10/1M"},
+    "o3":                         {"tags": ["reasoning", "math"],       "price": "$10/1M"},
+    "o4-mini":                    {"tags": ["reasoning", "fast"],       "price": "$1.10/1M"},
+    "o3-pro":                     {"tags": ["best reasoning"],          "price": "$20/1M"},
+    "gpt-4o":                     {"tags": ["vision"],                  "price": "$2.50/1M"},
+    "gpt-4o-mini":                {"tags": ["legacy"],                  "price": "$0.15/1M"},
+    "o1":                         {"tags": ["legacy", "reasoning"],     "price": "$15/1M"},
+    "o1-mini":                    {"tags": ["legacy"],                  "price": "$3/1M"},
+    "claude-opus-4-7":            {"tags": ["best", "agentic"],         "price": "$15/1M"},
+    "claude-sonnet-4-6":          {"tags": ["coding", "balanced"],      "price": "$3/1M",     "rec": True},
+    "claude-haiku-4-5-20251001":  {"tags": ["fast", "cheap"],           "price": "$0.80/1M",  "rec": True},
+    "claude-3-5-sonnet-20241022": {"tags": ["legacy"],                  "price": "$3/1M"},
+    "claude-3-5-haiku-20241022":  {"tags": ["legacy"],                  "price": "$0.80/1M"},
+    "claude-3-opus-20240229":     {"tags": ["legacy"],                  "price": "$15/1M"},
+    "gemini-3.5-flash":           {"tags": ["newest", "vision", "fast"],"price": "$0.10/1M",  "rec": True},
+    "gemini-2.5-flash":           {"tags": ["fast", "vision"],          "price": "$0.075/1M"},
+    "gemini-2.5-pro":             {"tags": ["smart", "vision"],         "price": "$1.25/1M"},
+    "gemini-2.0-flash":           {"tags": ["legacy"],                  "price": "$0.10/1M"},
+    "gemini-1.5-flash":           {"tags": ["legacy"],                  "price": "$0.35/1M"},
+    "gemini-1.5-pro":             {"tags": ["legacy"],                  "price": "$3.50/1M"},
+}
+
 
 class ChatView:
     def __init__(self, page: ft.Page, app: "AppLayout"):
@@ -376,18 +417,46 @@ class ChatView:
         self._file_picker: ft.FilePicker | None = None
         self._attach_btn: ft.IconButton | None = None
         self._cost_label: ft.Text | None = None
+        self._pending_new_project_setup: bool = False
         self._local_img_model_dd: ft.Dropdown | None = None
         self._local_img_model_row: ft.Container | None = None
         self._img_progress_text: ft.Text | None = None
         self._img_stop_btn: ft.IconButton | None = None
         self._gen_stop_event: threading.Event | None = None
         self._vision_supported: bool = True  # cached; updated in background
+        self._model_chip: ft.Container | None = None
+        self._model_chip_text: ft.Text | None = None
+        self._cloud_img_bar: ft.Container | None = None
+        self._cloud_img_ar_dd: ft.Dropdown | None = None
+        self._cloud_img_res_dd: ft.Dropdown | None = None
+        self._local_img_res_dd: ft.Dropdown | None = None
+        self._cloud_img_bar_label: ft.Text | None = None
+        self._drop_zone: ft.Container | None = None
+        self._balance_chip: ft.Container | None = None
+        self._balance_text: ft.Text | None = None
+        self._img_save_picker: ft.FilePicker | None = None
+        self._img_save_pending_path: str = ""
 
     # ── Build ──────────────────────────────────────────────────────────────────
 
     def build(self) -> ft.Column:
+        # Remove any stale file picker from a previous build before adding a new one.
+        if hasattr(self, "_file_picker") and self._file_picker in self.page.overlay:
+            try:
+                self.page.overlay.remove(self._file_picker)
+            except Exception:
+                pass
         self._file_picker = ft.FilePicker(on_result=self._on_files_picked)
         self.page.overlay.append(self._file_picker)
+
+        if hasattr(self, "_img_save_picker") and self._img_save_picker in self.page.overlay:
+            try:
+                self.page.overlay.remove(self._img_save_picker)
+            except Exception:
+                pass
+        self._img_save_picker = ft.FilePicker(on_result=self._on_img_save_result)
+        self.page.overlay.append(self._img_save_picker)
+
         self._refresh_vision_cache()
 
         self._chat_title_text = ft.Text(
@@ -427,6 +496,7 @@ class ChatView:
                 self._header(),
                 self._gen_type_selector(),
                 self._local_img_bar(),
+                self._cloud_img_bar_build(),
                 T.divider(),
                 self._message_list,
                 self._typing_indicator,
@@ -442,35 +512,65 @@ class ChatView:
     # ── Sub-sections ──────────────────────────────────────────────────────────
 
     def _header(self) -> ft.Container:
-        _provider_opts = [ft.dropdown.Option(p, p.capitalize()) for p in list_providers()]
-        _provider_opts.append(ft.dropdown.Option("local", "Local"))
-        self._provider_dropdown = ft.Dropdown(
-            value=self.state.selected_provider,
-            options=_provider_opts,
-            on_change=self._on_provider_change,
-            width=120,
-            bgcolor=T.BG_CARD,
-            border_color=T.BORDER,
-            focused_border_color=T.ACCENT,
+        # Keep hidden dropdowns so legacy code paths that reference them don't crash
+        self._provider_dropdown = None
+        self._model_dropdown = None
+
+        self._model_chip_text = ft.Text(
+            self._get_model_chip_text(),
+            size=12,
             color=T.TEXT_PRIMARY,
-            text_size=12,
-            content_padding=ft.padding.symmetric(horizontal=10, vertical=6),
-            border_radius=8,
+            weight=ft.FontWeight.W_500,
+            no_wrap=True,
+            overflow=ft.TextOverflow.ELLIPSIS,
+            max_lines=1,
         )
-        models = get_models_for_provider(self.state.selected_provider)
-        self._model_dropdown = ft.Dropdown(
-            value=self.state.selected_model if self.state.selected_model in models else models[0],
-            options=[ft.dropdown.Option(m) for m in models],
-            on_change=self._on_model_change,
-            width=190,
+        self._model_chip = ft.Container(
+            content=ft.Row(
+                controls=[
+                    self._model_chip_text,
+                    ft.Icon(ft.Icons.ARROW_DROP_DOWN, size=18, color=T.TEXT_MUTED),
+                ],
+                spacing=2,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.symmetric(horizontal=12, vertical=7),
             bgcolor=T.BG_CARD,
-            border_color=T.BORDER,
-            focused_border_color=T.ACCENT,
-            color=T.TEXT_PRIMARY,
-            text_size=12,
-            content_padding=ft.padding.symmetric(horizontal=10, vertical=6),
+            border=ft.border.all(1, T.BORDER),
             border_radius=8,
+            on_click=self._open_model_picker,
+            ink=True,
+            tooltip="Click to change model",
+            width=280,
         )
+
+        self._balance_text = ft.Text(
+            "…",
+            size=11,
+            color=T.TEXT_MUTED,
+            no_wrap=True,
+        )
+        self._balance_chip = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET_OUTLINED, size=13, color=T.TEXT_MUTED),
+                    self._balance_text,
+                ],
+                spacing=4,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.symmetric(horizontal=9, vertical=6),
+            bgcolor=T.BG_CARD,
+            border=ft.border.all(1, T.BORDER),
+            border_radius=8,
+            visible=False,
+            tooltip="Available balance for this API key",
+        )
+        # Kick off a background balance fetch for the current provider
+        self._refresh_balance_async()
+
         return ft.Container(
             content=ft.Row(
                 controls=[
@@ -483,8 +583,8 @@ class ChatView:
                         color=T.TEXT_SECONDARY,
                     ),
                     ft.Container(expand=True),
-                    self._provider_dropdown,
-                    self._model_dropdown,
+                    self._balance_chip,
+                    self._model_chip,
                     T.icon_button(
                         ft.Icons.ADD_COMMENT_OUTLINED,
                         "New Chat",
@@ -611,6 +711,20 @@ class ChatView:
                 width=80,
             )
 
+            _RES = [("1K", "~1024px"), ("2K", "~2048px"), ("4K", "~4096px"), ("8K", "~8192px")]
+            self._local_img_res_dd = ft.Dropdown(
+                value="1K",
+                options=[ft.dropdown.Option(key=r, text=f"{r}  {hint}") for r, hint in _RES],
+                bgcolor=T.BG_INPUT,
+                border_color=T.BORDER,
+                focused_border_color=T.ACCENT,
+                color=T.TEXT_PRIMARY,
+                text_size=12,
+                content_padding=ft.padding.symmetric(horizontal=10, vertical=4),
+                border_radius=8,
+                width=130,
+            )
+
             inner = ft.Row(
                 controls=[
                     ft.Icon(ft.Icons.AUTO_AWESOME, size=13, color=T.ACCENT_LIGHT),
@@ -618,6 +732,8 @@ class ChatView:
                     self._local_img_model_dd,
                     ft.Text("Size", size=11, color=T.TEXT_MUTED),
                     self._local_img_ar_dd,
+                    ft.Text("Res", size=11, color=T.TEXT_MUTED),
+                    self._local_img_res_dd,
                 ],
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -631,6 +747,67 @@ class ChatView:
             visible=is_active,
         )
         return self._local_img_model_row
+
+    def _cloud_img_bar_build(self) -> ft.Container:
+        """Compact aspect-ratio picker shown when a cloud image model is selected."""
+        from ai_providers.cloud_image_provider import CLOUD_IMAGE_MODELS, CLOUD_IMAGE_BY_ID
+        is_active = self.state.generation_type == "cloud_image"
+
+        _AR = [("1:1", "Square"), ("16:9", "Landscape"), ("9:16", "Portrait"), ("4:3", "Photo"), ("3:4", "Tall")]
+
+        self._cloud_img_ar_dd = ft.Dropdown(
+            value="1:1",
+            options=[ft.dropdown.Option(key=ar, text=f"{ar}  {lbl}") for ar, lbl in _AR],
+            bgcolor=T.BG_INPUT,
+            border_color=T.BORDER,
+            focused_border_color=T.ACCENT,
+            color=T.TEXT_PRIMARY,
+            text_size=12,
+            content_padding=ft.padding.symmetric(horizontal=10, vertical=4),
+            border_radius=8,
+            width=160,
+        )
+
+        _RES = [("1K", "~1024px"), ("2K", "~2048px"), ("4K", "~4096px"), ("8K", "~8192px")]
+        self._cloud_img_res_dd = ft.Dropdown(
+            value="1K",
+            options=[ft.dropdown.Option(key=r, text=f"{r}  {hint}") for r, hint in _RES],
+            bgcolor=T.BG_INPUT,
+            border_color=T.BORDER,
+            focused_border_color=T.ACCENT,
+            color=T.TEXT_PRIMARY,
+            text_size=12,
+            content_padding=ft.padding.symmetric(horizontal=10, vertical=4),
+            border_radius=8,
+            width=130,
+        )
+
+        entry = CLOUD_IMAGE_BY_ID.get(self.state.selected_model, CLOUD_IMAGE_MODELS[0])
+        self._cloud_img_bar_label = ft.Text(
+            entry["label"], size=11, color=T.TEXT_PRIMARY, weight=ft.FontWeight.W_500
+        )
+        self._cloud_img_bar = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.CLOUD_OUTLINED, size=13, color="#f472b6"),
+                    self._cloud_img_bar_label,
+                    ft.Text("·", size=11, color=T.TEXT_MUTED),
+                    ft.Text("Ratio", size=11, color=T.TEXT_MUTED),
+                    self._cloud_img_ar_dd,
+                    ft.Text("Res", size=11, color=T.TEXT_MUTED),
+                    self._cloud_img_res_dd,
+                    ft.Container(expand=True),
+                    ft.Text(entry.get("price_note", ""), size=10, color=T.TEXT_MUTED, italic=True),
+                ],
+                spacing=8,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.symmetric(horizontal=16, vertical=7),
+            bgcolor=T.ACCENT_DIM,
+            border=ft.border.only(bottom=ft.BorderSide(1, T.BORDER_ACCENT)),
+            visible=is_active,
+        )
+        return self._cloud_img_bar
 
     def _input_area(self) -> ft.Container:
         self._input_field = ft.TextField(
@@ -683,15 +860,46 @@ class ChatView:
             visible=False,
             height=96,
         )
+
+        # Drag-and-drop zone — visible when no attachments are pending
+        self._drop_zone = ft.Container(
+            content=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.ATTACH_FILE, size=14, color=T.TEXT_MUTED),
+                    ft.Text(
+                        "Click to attach files",
+                        size=11, color=T.TEXT_MUTED,
+                    ),
+                    ft.Text(
+                        "· images, PDF, Word, Excel, video",
+                        size=10, color=T.TEXT_MUTED, italic=True,
+                    ),
+                ],
+                spacing=6,
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            height=36,
+            border=ft.border.all(1, T.BORDER),
+            border_radius=8,
+            bgcolor=T.BG_INPUT,
+            padding=ft.padding.symmetric(horizontal=12, vertical=0),
+            on_click=self._open_file_picker,
+            ink=True,
+            visible=True,
+        )
+
         self._cost_label = ft.Text(
             "",
             size=10,
             color=T.TEXT_MUTED,
             visible=False,
         )
+
         return ft.Container(
             content=ft.Column(
                 controls=[
+                    self._drop_zone,
                     self._attachment_row,
                     ft.Row(
                         controls=[attach_btn, self._input_field, self._send_btn],
@@ -780,6 +988,67 @@ class ChatView:
             border_radius=20,
             on_click=lambda e, t=text: self._inject_prompt(t),
             ink=True,
+        )
+
+    def _make_user_bubble_with_images(self, text: str, image_attachments: list[dict]) -> ft.Row:
+        """Build a user message bubble that shows image thumbnails inline."""
+        bubble_controls: list[ft.Control] = []
+
+        # Text part (if any)
+        if text.strip():
+            bubble_controls.append(
+                ft.Text(text.strip(), size=13, color=T.TEXT_PRIMARY, selectable=True)
+            )
+
+        # Image thumbnails row
+        thumb_controls = []
+        for att in image_attachments:
+            src = att.get("file_path", "")
+            if src:
+                thumb_controls.append(
+                    ft.Container(
+                        content=ft.Image(
+                            src=src,
+                            width=120,
+                            height=120,
+                            fit=ft.ImageFit.COVER,
+                            border_radius=8,
+                        ),
+                        width=120,
+                        height=120,
+                        border_radius=8,
+                        clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                        border=ft.border.all(1, T.BORDER),
+                    )
+                )
+        if thumb_controls:
+            bubble_controls.append(
+                ft.Row(controls=thumb_controls, spacing=6, wrap=True)
+            )
+
+        bubble = ft.Container(
+            content=ft.Column(controls=bubble_controls, spacing=8, tight=True),
+            bgcolor=T.BG_USER_MSG,
+            border_radius=ft.border_radius.only(
+                top_left=12, top_right=12, bottom_left=2, bottom_right=12,
+            ),
+            border=ft.border.all(1, T.BORDER),
+            padding=ft.padding.symmetric(horizontal=12, vertical=12),
+        )
+
+        avatar = ft.Container(
+            content=ft.Text("YOU", size=9, weight=ft.FontWeight.BOLD, color=T.TEXT_PRIMARY),
+            width=32,
+            height=32,
+            bgcolor=T.ACCENT,
+            border_radius=16,
+            alignment=ft.alignment.center,
+        )
+
+        return ft.Row(
+            controls=[ft.Container(expand=True), bubble, avatar],
+            spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.START,
         )
 
     def _make_bubble(self, msg: Message) -> ft.Container:
@@ -923,6 +1192,17 @@ class ChatView:
         if self.state.is_generating:
             return
 
+        # New-project setup flow: intercept "yes" to start the brief interview
+        if self._pending_new_project_setup:
+            self._pending_new_project_setup = False
+            self._remove_setup_card()
+            if text.lower().strip() in ("yes", "yeah", "y", "sure", "ok", "okay", "yep", "yep!", "yes please", "start", "let's go", "lets go"):
+                if self._input_field:
+                    self._input_field.value = ""
+                    self._input_field.update()
+                self._dispatch(_BRIEF_FILL_API_TEXT, display_text=text)
+                return
+
         project = self.state.current_project
 
         # Save brief intent — parse last AI response directly, no new AI call
@@ -975,6 +1255,13 @@ class ChatView:
                 self._input_field.value = ""
                 self._input_field.update()
             self._dispatch_image(text)
+            return
+
+        if self.state.generation_type == "cloud_image":
+            if self._input_field:
+                self._input_field.value = ""
+                self._input_field.update()
+            self._dispatch_cloud_image(text)
             return
 
         attachments = list(self._pending_attachments)
@@ -1118,9 +1405,8 @@ class ChatView:
             if self._local_img_model_dd and self._local_img_model_dd.value
             else None
         )
-        # Also allow selecting from header model dropdown when provider is "local"
-        if not _selected_model and self._provider_dropdown and self._provider_dropdown.value == "local":
-            _selected_model = self._model_dropdown.value if self._model_dropdown else None
+        if not _selected_model and self.state.selected_provider == "local":
+            _selected_model = self.state.selected_model or None
 
         _AR_MAP = {
             "1:1":  (768,  768),
@@ -1131,7 +1417,18 @@ class ChatView:
         }
         _ar_val = getattr(self, "_local_img_ar_dd", None)
         _ar_key = _ar_val.value if _ar_val and _ar_val.value else "1:1"
-        _sel_w, _sel_h = _AR_MAP.get(_ar_key, (768, 768))
+        _base_w, _base_h = _AR_MAP.get(_ar_key, (768, 768))
+
+        # Scale base dimensions by requested resolution
+        _res_val = getattr(self, "_local_img_res_dd", None)
+        _res_key = _res_val.value if _res_val and _res_val.value else "1K"
+        _RES_TARGETS = {"1K": 1024, "2K": 2048, "4K": 4096, "8K": 8192}
+        _target_px = _RES_TARGETS.get(_res_key, 1024)
+        _long_side = max(_base_w, _base_h)
+        _scale = _target_px / _long_side
+        _sel_w = int(round(_base_w * _scale / 8) * 8)  # round to nearest 8px
+        _sel_h = int(round(_base_h * _scale / 8) * 8)
+
         _stop_ev = self._gen_stop_event
 
         def _on_progress(msg: str):
@@ -1229,6 +1526,131 @@ class ChatView:
 
         threading.Thread(target=run, daemon=True).start()
 
+    def _dispatch_cloud_image(self, prompt: str) -> None:
+        """Generate an image via cloud API (Gemini/Imagen) in a background thread."""
+        # Capture and clear pending attachments on the UI thread
+        attachments = list(self._pending_attachments)
+        self._pending_attachments.clear()
+        self._refresh_attachment_row()
+
+        self.state.is_generating = True
+        self._input_field.value = ""
+        self._input_field.disabled = True
+        self._send_btn.disabled = True
+        self._typing_indicator.visible = True
+
+        if self._img_progress_text:
+            self._img_progress_text.value = ""
+            self._img_progress_text.visible = True
+
+        self._message_list.controls = [
+            c for c in self._message_list.controls
+            if not isinstance(c, ft.Container) or not _is_empty_state(c)
+        ]
+
+        user_msg = Message(id="temp", chat_id="", role="user", content=prompt)
+        self._message_list.controls.append(self._make_bubble(user_msg))
+        self.page.update()
+
+        _model_id = self.state.selected_model
+        _ar = (
+            self._cloud_img_ar_dd.value
+            if self._cloud_img_ar_dd and self._cloud_img_ar_dd.value
+            else "1:1"
+        )
+        _res = (
+            self._cloud_img_res_dd.value
+            if self._cloud_img_res_dd and self._cloud_img_res_dd.value
+            else "1K"
+        )
+
+        # Extract first attached image as reference bytes for editing
+        import base64 as _b64
+        _ref_image: bytes | None = None
+        for att in attachments:
+            if att.get("type") == "image" and att.get("base64"):
+                _ref_image = _b64.b64decode(att["base64"])
+                break
+
+        def _on_progress(msg: str):
+            if self._img_progress_text:
+                self._img_progress_text.value = msg
+                try:
+                    self._img_progress_text.update()
+                except Exception:
+                    pass
+
+        def run():
+            try:
+                from ai_providers.cloud_image_provider import generate_cloud_image
+                result = generate_cloud_image(
+                    prompt=prompt,
+                    model_id=_model_id,
+                    aspect_ratio=_ar,
+                    resolution=_res,
+                    reference_image=_ref_image,
+                    on_progress=_on_progress,
+                )
+
+                if not self.state.current_chat:
+                    from storage.chat_repo import create_chat
+                    project_id = self.state.current_project.id if self.state.current_project else None
+                    self.state.current_chat = create_chat(project_id=project_id)
+                    self.state.refresh_chats()
+
+                from storage.chat_repo import add_message as _add_msg
+                _add_msg(chat_id=self.state.current_chat.id, role="user", content=prompt)
+
+                if result["ok"]:
+                    img_content = _json.dumps({
+                        "__type":  "local_image",
+                        "path":    result["path"],
+                        "prompt":  prompt,
+                        "backend": result.get("label", result.get("model", "cloud")),
+                    })
+                    _add_msg(
+                        chat_id=self.state.current_chat.id,
+                        role="assistant",
+                        content=img_content,
+                        provider=result.get("provider", "gemini"),
+                        model=result.get("model", _model_id),
+                    )
+                    ai_msg = Message(
+                        id="temp_ai",
+                        chat_id=self.state.current_chat.id,
+                        role="assistant",
+                        content=img_content,
+                        provider=result.get("provider", "gemini"),
+                        model=result.get("model", _model_id),
+                    )
+                    self._message_list.controls.append(self._make_bubble(ai_msg))
+                    if self.state.current_project:
+                        asset_repo.save_asset(
+                            project_id=self.state.current_project.id,
+                            asset_type="image",
+                            content=result["path"],
+                            title=prompt[:80],
+                            provider=result.get("provider", "gemini"),
+                            model=result.get("model", _model_id),
+                        )
+                else:
+                    self._message_list.controls.append(self._error_bubble(result["error"]))
+
+                self.state.refresh_chats()
+                self.app.refresh_right_panel()
+            except Exception as exc:
+                self._message_list.controls.append(self._error_bubble(str(exc)))
+            finally:
+                self.state.is_generating = False
+                self._input_field.disabled = False
+                self._send_btn.disabled = False
+                self._typing_indicator.visible = False
+                if self._img_progress_text:
+                    self._img_progress_text.visible = False
+                self.page.update()
+
+        threading.Thread(target=run, daemon=True).start()
+
     def _dispatch(
         self,
         text: str,
@@ -1252,20 +1674,22 @@ class ChatView:
             if not isinstance(c, ft.Container) or not _is_empty_state(c)
         ]
 
-        # Build display text — append file names so user sees what was attached
+        # Build display text — append names for non-image attachments only
         bubble_text = display_text if display_text is not None else text
-        if attachments:
-            names = " · ".join(a["filename"] for a in attachments)
+        non_image_attachments = [a for a in (attachments or []) if a["type"] != "image"]
+        image_attachments = [a for a in (attachments or []) if a["type"] == "image"]
+        if non_image_attachments:
+            names = " · ".join(a["filename"] for a in non_image_attachments)
             bubble_text = f"{bubble_text}\n\n📎 {names}" if bubble_text.strip() else f"📎 {names}"
 
-        # Optimistic user bubble
-        user_msg = Message(
-            id="temp",
-            chat_id="",
-            role="user",
-            content=bubble_text,
-        )
-        self._message_list.controls.append(self._make_bubble(user_msg))
+        # Optimistic user bubble — include image thumbnails inline when present
+        if image_attachments:
+            self._message_list.controls.append(
+                self._make_user_bubble_with_images(bubble_text, image_attachments)
+            )
+        else:
+            user_msg = Message(id="temp", chat_id="", role="user", content=bubble_text)
+            self._message_list.controls.append(self._make_bubble(user_msg))
         self.page.update()
 
         def run():
@@ -1351,14 +1775,17 @@ class ChatView:
             except Exception:
                 result = False
             self._vision_supported = result
-            self._update_attach_btn()
+            if self._attach_btn:
+                self._attach_btn.tooltip = self._attach_tooltip()
+            try:
+                self.page.update()
+            except Exception:
+                pass
 
         threading.Thread(target=run, daemon=True).start()
 
     def _attach_tooltip(self) -> str:
-        if self._vision_supported:
-            return "Attach file (image, PDF, Word, Excel, video…)"
-        return "Attach document (PDF, Word, Excel, CSV, TXT) — images require a vision model"
+        return "Attach file (image, PDF, Word, Excel, video…)"
 
     def _update_attach_btn(self) -> None:
         if not self._attach_btn:
@@ -1372,19 +1799,14 @@ class ChatView:
     def _open_file_picker(self, e) -> None:
         if not self._file_picker:
             return
-        doc_exts = ["pdf", "docx", "doc", "xlsx", "xls", "csv", "txt", "md"]
-        if self._current_supports_vision():
-            extensions = (
-                ["jpg", "jpeg", "png", "gif", "webp", "bmp"]
-                + doc_exts
-                + ["mp4", "mov", "avi", "mkv", "webm"]
-            )
-        else:
-            extensions = doc_exts
         self._file_picker.pick_files(
             dialog_title="Attach files",
             allow_multiple=True,
-            allowed_extensions=extensions,
+            allowed_extensions=[
+                "jpg", "jpeg", "png", "gif", "webp", "bmp",
+                "pdf", "docx", "doc", "xlsx", "xls", "csv", "txt", "md",
+                "mp4", "mov", "avi", "mkv", "webm",
+            ],
         )
 
     def _on_files_picked(self, e) -> None:
@@ -1395,7 +1817,7 @@ class ChatView:
             if f.path:
                 try:
                     attachment = process_file(f.path)
-                    attachment["file_path"] = f.path  # keep for thumbnail rendering
+                    attachment["file_path"] = f.path
                     self._pending_attachments.append(attachment)
                 except Exception as exc:
                     self._snack(f"Could not read {f.name}: {exc}", error=True)
@@ -1412,11 +1834,19 @@ class ChatView:
         self._attachment_row.controls.clear()
         for i, att in enumerate(self._pending_attachments):
             self._attachment_row.controls.append(self._make_attachment_preview(att, i))
-        self._attachment_row.visible = bool(self._pending_attachments)
+        has_attachments = bool(self._pending_attachments)
+        self._attachment_row.visible = has_attachments
+        if self._drop_zone:
+            self._drop_zone.visible = not has_attachments
         try:
             self._attachment_row.update()
         except Exception:
             pass
+        if self._drop_zone:
+            try:
+                self._drop_zone.update()
+            except Exception:
+                pass
 
     def _make_attachment_preview(self, att: dict, idx: int) -> ft.Control:
         """Rich preview card for an attachment — image thumb, video card, or doc card."""
@@ -1629,6 +2059,17 @@ class ChatView:
         )
         dlg.actions = [
             ft.TextButton("Close", on_click=_close, style=ft.ButtonStyle(color=T.TEXT_MUTED)),
+            ft.TextButton(
+                "Copy to clipboard",
+                on_click=lambda e, p=path: self._copy_image_to_clipboard(p),
+                style=ft.ButtonStyle(color=T.ACCENT_LIGHT),
+            ),
+            ft.FilledButton(
+                "Download",
+                icon=ft.Icons.DOWNLOAD_OUTLINED,
+                on_click=lambda e, p=path: self._download_image(p),
+                style=ft.ButtonStyle(bgcolor={"": T.ACCENT}),
+            ),
         ]
         dlg.actions_alignment = ft.MainAxisAlignment.END
         self.page.overlay.append(dlg)
@@ -1701,6 +2142,24 @@ class ChatView:
             ),
         )
 
+        action_row = ft.Row(
+            controls=[
+                T.icon_button(
+                    ft.Icons.DOWNLOAD_OUTLINED,
+                    "Download image",
+                    on_click=lambda e, p=path: self._download_image(p),
+                    size=15,
+                ),
+                T.icon_button(
+                    ft.Icons.CONTENT_COPY_OUTLINED,
+                    "Copy image to clipboard",
+                    on_click=lambda e, p=path: self._copy_image_to_clipboard(p),
+                    size=15,
+                ),
+            ],
+            spacing=2,
+        )
+
         return ft.Column(
             controls=[
                 ft.Row(
@@ -1714,6 +2173,7 @@ class ChatView:
                     color=T.TEXT_MUTED,
                     italic=True,
                 ),
+                action_row,
             ],
             spacing=6,
             tight=True,
@@ -1721,17 +2181,35 @@ class ChatView:
 
     def _error_bubble(self, message: str) -> ft.Container:
         return ft.Container(
-            content=ft.Row(
+            content=ft.Column(
                 controls=[
-                    ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.ERROR, size=16),
-                    ft.Text(message, color=T.ERROR, size=12, expand=True),
+                    ft.Row(
+                        controls=[
+                            ft.Icon(ft.Icons.ERROR_OUTLINE, color=T.ERROR, size=16),
+                            ft.Text(message, color=T.ERROR, size=12, expand=True, selectable=True),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                    ),
+                    ft.Row(
+                        controls=[
+                            T.icon_button(
+                                ft.Icons.CONTENT_COPY_OUTLINED,
+                                "Copy error",
+                                on_click=lambda e, c=message: self._copy_to_clipboard(c),
+                                size=14,
+                            ),
+                        ],
+                        spacing=0,
+                    ),
                 ],
-                spacing=8,
+                spacing=4,
+                tight=True,
             ),
             bgcolor="#2d0a0a",
             border=ft.border.all(1, T.ERROR),
             border_radius=8,
-            padding=ft.padding.symmetric(horizontal=12, vertical=12),
+            padding=ft.padding.symmetric(horizontal=12, vertical=10),
         )
 
     def _on_input_change(self, e) -> None:
@@ -1739,6 +2217,17 @@ class ChatView:
 
     def _update_cost_label(self, text: str) -> None:
         if not self._cost_label:
+            return
+        if self.state.generation_type == "cloud_image":
+            from ai_providers.cloud_image_provider import CLOUD_IMAGE_BY_ID
+            entry = CLOUD_IMAGE_BY_ID.get(self.state.selected_model, {})
+            price = entry.get("price_note", "cloud · paid API")
+            self._cost_label.value = f"cloud image · {price}"
+            self._cost_label.visible = bool(text.strip())
+            try:
+                self._cost_label.update()
+            except Exception:
+                pass
             return
         if self.state.generation_type == "local_image":
             if self._local_img_model_dd and self._local_img_model_dd.value:
@@ -1788,56 +2277,458 @@ class ChatView:
         except Exception:
             pass
 
-    def _on_provider_change(self, e) -> None:
-        provider = e.control.value
-        if provider == "local":
-            from ai_providers.local_image_provider import get_installed_models, IMAGE_CATALOG_BY_ID
-            installed = get_installed_models()
-            if self._model_dropdown:
-                if installed:
-                    self._model_dropdown.options = [
-                        ft.dropdown.Option(mid, IMAGE_CATALOG_BY_ID[mid]["label"])
-                        for mid in installed if mid in IMAGE_CATALOG_BY_ID
-                    ]
-                    self._model_dropdown.value = installed[0]
-                    if self._local_img_model_dd:
-                        self._local_img_model_dd.value = installed[0]
-                        try:
-                            self._local_img_model_dd.update()
-                        except Exception:
-                            pass
-                else:
-                    self._model_dropdown.options = [ft.dropdown.Option("", "No models installed")]
-                    self._model_dropdown.value = ""
-                self._model_dropdown.update()
-            self._set_gen_type("local_image")
-            return
-        self.state.selected_provider = provider
-        models = get_models_for_provider(self.state.selected_provider)
-        self.state.selected_model = models[0] if models else ""
-        if self._model_dropdown:
-            self._model_dropdown.options = [ft.dropdown.Option(m) for m in models]
-            self._model_dropdown.value = self.state.selected_model
-            self._model_dropdown.update()
-        _save_default(self.state.selected_provider, self.state.selected_model)
-        self._refresh_vision_cache()
-        self._update_cost_label(self._input_field.value if self._input_field else "")
-        self.app.refresh_right_panel()
+    # ── Model picker ──────────────────────────────────────────────────────────
 
-    def _on_model_change(self, e) -> None:
-        if self._provider_dropdown and self._provider_dropdown.value == "local":
+    def _get_model_chip_text(self) -> str:
+        provider = self.state.selected_provider
+        model    = self.state.selected_model
+        info     = _PROVIDER_DISPLAY.get(provider, {"emoji": "•"})
+        if provider == "cloud_image":
+            from ai_providers.cloud_image_provider import CLOUD_IMAGE_BY_ID
+            label = CLOUD_IMAGE_BY_ID.get(model, {}).get("label", model)
+            return f"🎨  {label}"
+        elif provider == "local":
+            from ai_providers.local_image_provider import IMAGE_CATALOG_BY_ID
+            label = IMAGE_CATALOG_BY_ID.get(model, {}).get("label", model)
+        elif provider == "ollama":
+            from ai_providers.local_model_catalog import CATALOG_BY_ID
+            label = CATALOG_BY_ID.get(model, {}).get("label", model)
+        else:
+            label = model
+        return f"{info['emoji']}  {label}"
+
+    def _update_model_chip(self) -> None:
+        if self._model_chip_text:
+            self._model_chip_text.value = self._get_model_chip_text()
+            try:
+                self._model_chip_text.update()
+            except Exception:
+                pass
+
+    def _refresh_balance_async(self) -> None:
+        """Fetch provider balance in the background and update the chip."""
+        provider = self.state.selected_provider
+
+        def _bg():
+            from ai_providers.balance_fetcher import fetch_balance
+            balance = fetch_balance(provider)
+            # Only update if the provider hasn't changed while we were fetching
+            if self.state.selected_provider != provider:
+                return
+            try:
+                if self._balance_chip and self._balance_text:
+                    if balance:
+                        self._balance_text.value = balance
+                        self._balance_chip.visible = True
+                    else:
+                        self._balance_chip.visible = False
+                    self._balance_chip.update()
+            except Exception:
+                pass
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _apply_selection(self, provider: str, model: str, model_type: str = "text") -> None:
+        """Unified method that applies a model selection and updates all dependent state."""
+        if model_type == "cloud_image" or provider == "cloud_image":
+            self.state.selected_provider = "cloud_image"
+            self.state.selected_model    = model
+            self._set_gen_type("cloud_image")
+            if self._cloud_img_bar_label:
+                try:
+                    from ai_providers.cloud_image_provider import CLOUD_IMAGE_BY_ID
+                    self._cloud_img_bar_label.value = CLOUD_IMAGE_BY_ID.get(model, {}).get("label", model)
+                except Exception:
+                    self._cloud_img_bar_label.value = model or "Nano Banana Pro"
+                try:
+                    self._cloud_img_bar_label.update()
+                except Exception:
+                    pass
+        elif model_type == "image" or provider == "local":
+            self.state.selected_provider = "local"
+            self.state.selected_model    = model
+            self._set_gen_type("local_image")
             if self._local_img_model_dd:
-                self._local_img_model_dd.value = e.control.value
+                self._local_img_model_dd.value = model
                 try:
                     self._local_img_model_dd.update()
                 except Exception:
                     pass
-            return
-        self.state.selected_model = e.control.value
-        _save_default(self.state.selected_provider, self.state.selected_model)
-        self._refresh_vision_cache()
+        else:
+            self.state.selected_provider = provider
+            self.state.selected_model    = model
+            _save_default(provider, model)
+            self._refresh_vision_cache()
+            # Leave normal gen types (chat, ad_copy, etc.) alone, but exit image modes
+            if self.state.generation_type in ("cloud_image", "local_image"):
+                self._set_gen_type("chat")
+        self._update_model_chip()
+        self._refresh_balance_async()
         self._update_cost_label(self._input_field.value if self._input_field else "")
         self.app.refresh_right_panel()
+        self.page.update()
+
+    def _open_model_picker(self, e=None) -> None:
+        """Open the organized model picker dialog."""
+        from storage.asset_repo import get_all_api_keys
+        from ai_providers.local_image_provider import get_installed_models, IMAGE_MODEL_CATALOG
+        from ai_providers.local_model_catalog import CATALOG
+
+        existing_keys   = get_all_api_keys()
+        installed_imgs  = set(get_installed_models())
+
+        # Use cached Ollama state so the dialog opens instantly (no blocking I/O).
+        ollama_ok        = _PICKER_OLLAMA_CACHE["ok"]
+        ollama_installed = set(_PICKER_OLLAMA_CACHE["installed"])
+
+        # Refresh the cache in the background if it is stale.
+        if _time.time() - _PICKER_OLLAMA_CACHE["ts"] > _PICKER_CACHE_TTL:
+            def _bg_refresh_ollama():
+                try:
+                    from ai_providers.ollama_provider import is_ollama_running, list_installed_models
+                    ok = is_ollama_running()
+                    if ok:
+                        raw = list_installed_models()
+                        inst: set[str] = set()
+                        for m in raw:
+                            n = m["name"]
+                            inst.add(n)
+                            inst.add(n.split(":")[0])
+                    else:
+                        inst = set()
+                    _PICKER_OLLAMA_CACHE.update({"ts": _time.time(), "ok": ok, "installed": frozenset(inst)})
+                except Exception:
+                    _PICKER_OLLAMA_CACHE.update({"ts": _time.time(), "ok": False, "installed": frozenset()})
+            threading.Thread(target=_bg_refresh_ollama, daemon=True).start()
+
+        dlg = ft.AlertDialog(modal=True)
+
+        def close_dlg():
+            dlg.open = False
+            self.page.update()
+
+        # ── Row builder ──────────────────────────────────────────────────────
+        def _row(provider, model_id, label=None, tags=None, price=None,
+                 hint="", hint_ok=True, disabled=False, model_type="text",
+                 searchable_text=""):
+            is_sel = (self.state.selected_provider == provider and
+                      self.state.selected_model    == model_id)
+            display = label or model_id
+
+            def on_click(e, p=provider, m=model_id, mt=model_type):
+                close_dlg()
+                self._apply_selection(p, m, model_type=mt)
+
+            tag_chips = ft.Row(
+                controls=[
+                    ft.Container(
+                        content=ft.Text(t, size=9, color=T.ACCENT_LIGHT),
+                        bgcolor=T.BG_SECONDARY,
+                        border_radius=3,
+                        padding=ft.padding.symmetric(horizontal=5, vertical=2),
+                        border=ft.border.all(1, T.BORDER),
+                    )
+                    for t in (tags or [])[:3]
+                ],
+                spacing=4, tight=True,
+            )
+
+            name_row = ft.Row(
+                controls=[
+                    ft.Text(
+                        display, size=12,
+                        color=T.TEXT_PRIMARY if not disabled else T.TEXT_MUTED,
+                        weight=ft.FontWeight.W_600 if is_sel else ft.FontWeight.NORMAL,
+                    ),
+                    tag_chips,
+                ],
+                spacing=6, tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+            hint_ctrl = (
+                ft.Text(hint, size=10, color=T.SUCCESS if hint_ok else T.TEXT_MUTED, italic=True)
+                if hint else ft.Container(height=0)
+            )
+
+            return ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(
+                            ft.Icons.RADIO_BUTTON_CHECKED if is_sel
+                            else ft.Icons.RADIO_BUTTON_UNCHECKED,
+                            size=14,
+                            color=T.ACCENT if is_sel else T.TEXT_MUTED,
+                        ),
+                        ft.Column(
+                            controls=[name_row, hint_ctrl],
+                            spacing=1, tight=True, expand=True,
+                        ),
+                        ft.Text(price or "", size=10, color=T.TEXT_MUTED),
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                bgcolor=T.ACCENT_DIM if is_sel else T.BG_CARD,
+                border_radius=6,
+                padding=ft.padding.symmetric(horizontal=10, vertical=8),
+                border=ft.border.all(1, T.BORDER_ACCENT if is_sel else T.BORDER),
+                on_click=on_click if not disabled else None,
+                ink=not disabled,
+                opacity=1.0 if not disabled else 0.45,
+                data=searchable_text or f"{display} {' '.join(tags or '')} {provider}",
+            )
+
+        def _section_hdr(title, emoji="", color=T.ACCENT_LIGHT):
+            return ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Text(emoji, size=13),
+                        ft.Text(title, size=11, weight=ft.FontWeight.BOLD, color=color),
+                    ],
+                    spacing=6,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=ft.padding.only(top=14, bottom=4, left=2),
+            )
+
+        def _provider_hdr(provider_key):
+            info = _PROVIDER_DISPLAY.get(provider_key, {"emoji": "", "label": provider_key.title()})
+            configured = bool(existing_keys.get(provider_key, "").strip())
+            badge = ft.Container(
+                content=ft.Text(
+                    "configured ✓" if configured else "key needed",
+                    size=9,
+                    color=T.SUCCESS if configured else "#f59e0b",
+                    weight=ft.FontWeight.W_600,
+                ),
+                bgcolor="#052e16" if configured else "#451a03",
+                border_radius=4,
+                padding=ft.padding.symmetric(horizontal=6, vertical=2),
+                border=ft.border.all(1, T.SUCCESS if configured else "#92400e"),
+            )
+            return ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Text(info["emoji"], size=14),
+                        ft.Text(info["label"], size=12,
+                                weight=ft.FontWeight.W_600, color=T.TEXT_PRIMARY),
+                        badge,
+                    ],
+                    spacing=8,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=ft.padding.only(top=8, bottom=3, left=4),
+            )
+
+        # ── Build full item list ─────────────────────────────────────────────
+        all_items: list[ft.Control] = []
+
+        # Cloud text
+        all_items.append(_section_hdr("CLOUD  —  TEXT GENERATION", "☁️"))
+        for p in ("openai", "claude", "gemini"):
+            all_items.append(_provider_hdr(p))
+            for mid in get_models_for_provider(p):
+                meta = _PICKER_META.get(mid, {})
+                tags = list(meta.get("tags", []))
+                if meta.get("rec"):
+                    tags = ["★ rec"] + tags
+                all_items.append(_row(
+                    provider=p, model_id=mid,
+                    tags=tags[:3], price=meta.get("price"),
+                    searchable_text=f"{mid} {p} {' '.join(tags)}",
+                ))
+
+        # Ollama
+        all_items.append(_section_hdr("LOCAL  —  OLLAMA", "💻", "#a78bfa"))
+        if not ollama_ok:
+            all_items.append(ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE, size=13, color=T.TEXT_MUTED),
+                        ft.Text("Ollama is not running — start it in Settings → Local Models.",
+                                size=11, color=T.TEXT_MUTED),
+                    ],
+                    spacing=6,
+                ),
+                padding=ft.padding.symmetric(horizontal=12, vertical=8),
+            ))
+        else:
+            for entry in CATALOG:
+                mid      = entry["id"]
+                inst     = mid in ollama_installed or mid.split(":")[0] in ollama_installed
+                tags     = list(entry.get("tags", []))[:2]
+                if entry.get("vision"):
+                    tags = ["vision"] + tags
+                all_items.append(_row(
+                    provider="ollama", model_id=mid,
+                    label=entry["label"],
+                    tags=tags,
+                    price=f"{entry['size_gb']} GB",
+                    hint="Installed ✓" if inst else "Not installed — download in Settings",
+                    hint_ok=inst,
+                    disabled=not inst,
+                    searchable_text=f"{mid} {entry['label']} ollama {' '.join(tags)}",
+                ))
+
+        # Cloud image (Nano Banana Pro / Imagen 3)
+        _CLOUD_IMG_FALLBACK = [
+            {"id": "nano-banana-pro",  "label": "Nano Banana Pro",  "tags": ["best-quality", "photorealistic", "gemini"], "price_note": "~$0.04/image"},
+            {"id": "nano-banana-fast", "label": "Nano Banana Fast", "tags": ["fast", "gemini"],                           "price_note": "~$0.02/image"},
+            {"id": "gemini-imggen",    "label": "Gemini Image Gen", "tags": ["creative", "editing", "gemini"],            "price_note": "Gemini quota"},
+        ]
+        try:
+            from ai_providers.cloud_image_provider import CLOUD_IMAGE_MODELS as _cim
+            _cloud_img_models = _cim
+        except Exception:
+            _cloud_img_models = _CLOUD_IMG_FALLBACK
+        all_items.append(_section_hdr("CLOUD  —  IMAGE GENERATION", "🎨", "#f472b6"))
+        gemini_key = bool(existing_keys.get("gemini", "").strip())
+        for entry in _cloud_img_models:
+            all_items.append(_row(
+                provider="cloud_image",
+                model_id=entry["id"],
+                label=entry["label"],
+                tags=entry.get("tags", [])[:3],
+                price=entry.get("price_note", ""),
+                hint="" if gemini_key else "Add Gemini API key in Settings to enable",
+                hint_ok=gemini_key,
+                disabled=False,
+                model_type="cloud_image",
+                searchable_text=f"{entry['id']} {entry['label']} gemini image cloud",
+            ))
+
+        # Local image
+        all_items.append(_section_hdr("LOCAL  —  IMAGE GENERATION", "✨", "#a78bfa"))
+        if not installed_imgs:
+            all_items.append(ft.Container(
+                content=ft.Row(
+                    controls=[
+                        ft.Icon(ft.Icons.INFO_OUTLINE, size=13, color=T.TEXT_MUTED),
+                        ft.Text("No image models installed — download one in Settings → Local Image Models.",
+                                size=11, color=T.TEXT_MUTED),
+                    ],
+                    spacing=6,
+                ),
+                padding=ft.padding.symmetric(horizontal=12, vertical=8),
+            ))
+        else:
+            for entry in IMAGE_MODEL_CATALOG:
+                mid  = entry["id"]
+                inst = mid in installed_imgs
+                all_items.append(_row(
+                    provider="local", model_id=mid,
+                    label=entry["label"],
+                    tags=entry.get("tags", [])[:2],
+                    price=f"{entry['size_gb']} GB",
+                    hint="Installed ✓" if inst else "Not installed",
+                    hint_ok=inst,
+                    disabled=not inst,
+                    model_type="image",
+                    searchable_text=f"{mid} {entry['label']} image local {' '.join(entry.get('tags', []))}",
+                ))
+
+        # ── Searchable list ──────────────────────────────────────────────────
+        list_col = ft.Column(
+            controls=list(all_items),
+            spacing=3,
+            scroll=ft.ScrollMode.AUTO,
+        )
+
+        def on_search(e):
+            q = (e.control.value or "").lower().strip()
+            if not q:
+                list_col.controls = list(all_items)
+            else:
+                list_col.controls = [
+                    ctrl for ctrl in all_items
+                    if (
+                        # Always keep section/provider headers
+                        not hasattr(ctrl, "data")
+                        or q in (ctrl.data or "").lower()
+                    )
+                ]
+            try:
+                list_col.update()
+            except Exception:
+                pass
+
+        search_field = ft.TextField(
+            hint_text="Search models…",
+            prefix_icon=ft.Icons.SEARCH,
+            on_change=on_search,
+            bgcolor=T.BG_INPUT,
+            border_color=T.BORDER,
+            focused_border_color=T.ACCENT,
+            color=T.TEXT_PRIMARY,
+            hint_style=ft.TextStyle(color=T.TEXT_MUTED),
+            cursor_color=T.ACCENT_LIGHT,
+            border_radius=8,
+            text_size=12,
+            content_padding=ft.padding.symmetric(horizontal=12, vertical=8),
+            autofocus=True,
+        )
+
+        dlg.title = ft.Row(
+            controls=[
+                ft.Icon(ft.Icons.SMART_TOY_OUTLINED, size=18, color=T.ACCENT_LIGHT),
+                ft.Text("Select Model", size=15, weight=ft.FontWeight.W_600, color=T.TEXT_PRIMARY),
+                ft.Container(expand=True),
+                ft.IconButton(
+                    icon=ft.Icons.CLOSE,
+                    icon_size=16,
+                    icon_color=T.TEXT_MUTED,
+                    on_click=lambda e: close_dlg(),
+                    style=ft.ButtonStyle(
+                        shape=ft.CircleBorder(),
+                        padding=ft.padding.all(4),
+                    ),
+                ),
+            ],
+            spacing=8,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        dlg.content = ft.Container(
+            content=ft.Column(
+                controls=[
+                    search_field,
+                    ft.Container(height=6),
+                    ft.Container(
+                        content=list_col,
+                        height=480,
+                        expand=False,
+                    ),
+                ],
+                spacing=0,
+                tight=True,
+            ),
+            width=500,
+            padding=ft.padding.only(top=4),
+        )
+        dlg.bgcolor          = T.BG_SECONDARY
+        dlg.shape            = ft.RoundedRectangleBorder(radius=12)
+        dlg.actions          = []
+        dlg.actions_alignment = ft.MainAxisAlignment.END
+
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
+    def _on_provider_change(self, e) -> None:
+        # Legacy handler kept for any residual callers; real changes go through _apply_selection
+        provider = e.control.value if hasattr(e, "control") else e
+        if provider == "local":
+            from ai_providers.local_image_provider import get_installed_models
+            installed = get_installed_models()
+            model = installed[0] if installed else ""
+            self._apply_selection("local", model, model_type="image")
+            return
+        models = get_models_for_provider(provider)
+        self._apply_selection(provider, models[0] if models else "")
+
+    def _on_model_change(self, e) -> None:
+        # Legacy handler kept for any residual callers; real changes go through _apply_selection
+        model = e.control.value if hasattr(e, "control") else e
+        self._apply_selection(self.state.selected_provider, model)
 
     def _stop_generation(self, e=None) -> None:
         if self._gen_stop_event:
@@ -1850,6 +2741,20 @@ class ChatView:
             self._local_img_model_row.visible = (gtype == "local_image")
             try:
                 self._local_img_model_row.update()
+            except Exception:
+                pass
+        if self._cloud_img_bar:
+            self._cloud_img_bar.visible = (gtype == "cloud_image")
+            if gtype == "cloud_image" and self._cloud_img_bar_label:
+                # Force the label text value so Flet re-renders it after a visibility toggle.
+                try:
+                    from ai_providers.cloud_image_provider import CLOUD_IMAGE_BY_ID, CLOUD_IMAGE_MODELS
+                    entry = CLOUD_IMAGE_BY_ID.get(self.state.selected_model, CLOUD_IMAGE_MODELS[0])
+                    self._cloud_img_bar_label.value = entry["label"]
+                except Exception:
+                    self._cloud_img_bar_label.value = self.state.selected_model or "Nano Banana Pro"
+            try:
+                self._cloud_img_bar.update()
             except Exception:
                 pass
         self._update_cost_label(self._input_field.value if self._input_field else "")
@@ -1901,6 +2806,57 @@ class ChatView:
     def _copy_to_clipboard(self, content: str) -> None:
         self.page.set_clipboard(content)
         self._snack("Copied to clipboard")
+
+    def _download_image(self, path: str) -> None:
+        import os
+        self._img_save_pending_path = path
+        if self._img_save_picker:
+            self._img_save_picker.save_file(
+                dialog_title="Save Image",
+                file_name=os.path.basename(path),
+                allowed_extensions=["png", "jpg", "jpeg", "webp"],
+            )
+
+    def _on_img_save_result(self, e) -> None:
+        dest = getattr(e, "path", None)
+        if not dest or not self._img_save_pending_path:
+            return
+        import shutil
+        try:
+            shutil.copy2(self._img_save_pending_path, dest)
+            self._snack("Image saved ✓")
+        except Exception as exc:
+            self._snack(f"Could not save: {exc}", error=True)
+
+    def _copy_image_to_clipboard(self, path: str) -> None:
+        import subprocess, sys
+        try:
+            if sys.platform == "win32":
+                ps = (
+                    "Add-Type -AssemblyName System.Windows.Forms; "
+                    "Add-Type -AssemblyName System.Drawing; "
+                    f"$img = [System.Drawing.Image]::FromFile('{path}'); "
+                    "[System.Windows.Forms.Clipboard]::SetImage($img); "
+                    "$img.Dispose()"
+                )
+                subprocess.run(["powershell", "-Command", ps], timeout=10, check=True)
+            elif sys.platform == "darwin":
+                subprocess.run(
+                    ["osascript", "-e", f'set the clipboard to (read (POSIX file "{path}") as «class PNGf»)'],
+                    timeout=10, check=True,
+                )
+            else:
+                subprocess.run(
+                    ["xclip", "-selection", "clipboard", "-t", "image/png", "-i", path],
+                    timeout=10, check=True,
+                )
+            self._snack("Image copied to clipboard ✓")
+        except FileNotFoundError:
+            self.page.set_clipboard(path)
+            self._snack("Copied image path (install xclip for full image copy on Linux)")
+        except Exception:
+            self.page.set_clipboard(path)
+            self._snack("Copied image path to clipboard")
 
     def _save_as_asset(self, msg: Message) -> None:
         if not self.state.current_project:
@@ -2002,10 +2958,6 @@ class ChatView:
         def close_dlg():
             dlg.open = False
             self.page.update()
-            try:
-                self.page.overlay.remove(dlg)
-            except ValueError:
-                pass
 
         def select_and_close(chat):
             close_dlg()
@@ -2151,6 +3103,7 @@ class ChatView:
 
     def on_project_changed(self) -> None:
         """Called when user switches project."""
+        self._pending_new_project_setup = False
         if self._chat_title_text:
             self._chat_title_text.value = self._current_chat_title()
         self.reload_messages()
@@ -2372,6 +3325,114 @@ class ChatView:
         if self.state.is_generating:
             return
         self._dispatch(_BRIEF_FILL_API_TEXT, display_text="Help me fill my marketing brief")
+
+    _SETUP_CARD_TAG = "__new_project_setup_card__"
+
+    def _remove_setup_card(self) -> None:
+        self._message_list.controls = [
+            c for c in self._message_list.controls
+            if getattr(c, "data", None) != self._SETUP_CARD_TAG
+        ]
+        try:
+            self._message_list.update()
+        except Exception:
+            pass
+
+    def show_new_project_welcome(self) -> None:
+        """Inject a setup invitation card when a brand-new project is created."""
+        project = self.state.current_project
+        if not project:
+            return
+
+        if not self.state.current_chat:
+            chat = chat_repo.create_chat(project_id=project.id)
+            self.state.chats.insert(0, chat)
+            self.state.current_chat = chat
+
+        self.reload_messages()
+        self._pending_new_project_setup = True
+
+        def on_start(e):
+            self._pending_new_project_setup = False
+            self._remove_setup_card()
+            self._dispatch(_BRIEF_FILL_API_TEXT, display_text="Yes, help me set up my project")
+
+        def on_skip(e):
+            self._pending_new_project_setup = False
+            self._remove_setup_card()
+
+        card = ft.Container(
+            data=self._SETUP_CARD_TAG,
+            content=ft.Column(
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                content=ft.Text("✦", size=13, color=T.ACCENT_LIGHT),
+                                width=28, height=28,
+                                bgcolor=T.ACCENT_DIM,
+                                border_radius=14,
+                                alignment=ft.alignment.center,
+                            ),
+                            ft.Text(
+                                f"Project ready: {project.name}",
+                                size=13,
+                                weight=ft.FontWeight.W_600,
+                                color=T.TEXT_PRIMARY,
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Text(
+                        "Would you like me to help set up this project?\n"
+                        "I'll ask you a few quick questions to fill in your Marketing Brief "
+                        "and Brand info so the AI generates more targeted content for you.",
+                        size=12,
+                        color=T.TEXT_SECONDARY,
+                    ),
+                    ft.Text(
+                        "Type yes or click below to get started.",
+                        size=11,
+                        color=T.TEXT_MUTED,
+                        italic=True,
+                    ),
+                    ft.Row(
+                        controls=[
+                            ft.Container(expand=True),
+                            ft.TextButton(
+                                "Skip for now",
+                                on_click=on_skip,
+                                style=ft.ButtonStyle(color=T.TEXT_MUTED),
+                            ),
+                            ft.FilledButton(
+                                "Yes, set up project",
+                                icon=ft.Icons.ROCKET_LAUNCH_OUTLINED,
+                                on_click=on_start,
+                                style=ft.ButtonStyle(bgcolor={"": T.ACCENT}),
+                            ),
+                        ],
+                        spacing=6,
+                    ),
+                ],
+                spacing=10,
+                tight=True,
+            ),
+            bgcolor=T.BG_CARD,
+            border=ft.border.all(1, T.BORDER_ACCENT),
+            border_radius=12,
+            padding=ft.padding.symmetric(horizontal=16, vertical=14),
+        )
+
+        self._message_list.controls = [
+            c for c in self._message_list.controls
+            if not isinstance(c, ft.Container) or not _is_empty_state(c)
+        ]
+        self._message_list.controls.append(card)
+        try:
+            self._message_list.update()
+        except Exception:
+            pass
 
 
 def _is_empty_state(container: ft.Container) -> bool:
